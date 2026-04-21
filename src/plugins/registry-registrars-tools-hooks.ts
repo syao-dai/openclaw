@@ -59,6 +59,8 @@ const conversationHookNames = new Set<PluginHookName>([
   "llm_output",
   "before_agent_finalize",
   "agent_end",
+  "agent_iteration_start",
+  "agent_iteration_end",
   "before_agent_run",
 ]);
 

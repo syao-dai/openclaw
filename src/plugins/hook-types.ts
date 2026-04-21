@@ -106,6 +106,8 @@ const PLUGIN_HOOK_NAMES = [
   "llm_output",
   "before_agent_finalize",
   "agent_end",
+  "agent_iteration_start",
+  "agent_iteration_end",
   "before_compaction",
   "after_compaction",
   "before_reset",
@@ -304,6 +306,35 @@ export type PluginHookAgentEndEvent = {
   success: boolean;
   error?: string;
   durationMs?: number;
+};
+
+export type PluginHookAgentIterationStartEvent = {
+  runId: string;
+  sessionId: string;
+  iterationId: number;
+  toolResults?: unknown[];
+  messages: unknown[];
+  provider: string;
+  model: string;
+};
+
+export type PluginHookAgentIterationEndEvent = {
+  runId: string;
+  sessionId: string;
+  iterationId: number;
+  assistantMessage?: unknown;
+  toolCalls: Array<{
+    id?: string;
+    name: string;
+    arguments?: string;
+  }>;
+  usage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
 };
 
 export type PluginHookBeforeAgentFinalizeEvent = {
@@ -863,6 +894,11 @@ export type PluginHookHandlerMap = {
     PluginHookBeforeAgentFinalizeResult
   >;
   agent_end: AsyncPluginHook<PluginHookAgentEndEvent, PluginHookAgentContext>;
+  agent_iteration_start: AsyncPluginHook<
+    PluginHookAgentIterationStartEvent,
+    PluginHookAgentContext
+  >;
+  agent_iteration_end: AsyncPluginHook<PluginHookAgentIterationEndEvent, PluginHookAgentContext>;
   before_compaction: AsyncPluginHook<PluginHookBeforeCompactionEvent, PluginHookAgentContext>;
   after_compaction: AsyncPluginHook<PluginHookAfterCompactionEvent, PluginHookAgentContext>;
   before_reset: AsyncPluginHook<PluginHookBeforeResetEvent, PluginHookAgentContext>;

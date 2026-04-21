@@ -113,6 +113,15 @@ export function handleMessageEnd(
     emitReasoningEnd(ctx);
   }
   ctx.noteLastAssistant(assistantMessage);
+  ctx.iterationTracker?.onIterationEnd({
+    assistantMessage,
+    hookContext: {
+      runId: ctx.params.runId,
+      agentId: ctx.params.agentId,
+      sessionKey: ctx.params.sessionKey,
+      sessionId: ctx.params.sessionId,
+    },
+  });
   // Only a silent stop below can keep the earlier answer; any other message replaces it.
   ctx.state.keptAnswer = undefined;
   if (suppressVisibleAssistantOutput) {

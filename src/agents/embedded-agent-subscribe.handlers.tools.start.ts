@@ -373,6 +373,23 @@ export function handleToolExecutionStart(
         }),
     });
 
+    // Fire agent_iteration_start before the first tool of this iteration.
+    if (ctx.iterationTracker && ctx.state.itemActiveIds.size === 0) {
+      const session = ctx.params.session as
+        | { agent?: { state?: { messages?: unknown[] } } }
+        | undefined;
+      const messages = session?.agent?.state?.messages ?? [];
+      ctx.iterationTracker.onIterationStart({
+        messages,
+        hookContext: {
+          runId: ctx.params.runId,
+          agentId: ctx.params.agentId,
+          sessionKey: ctx.params.sessionKey,
+          sessionId: ctx.params.sessionId,
+        },
+      });
+    }
+
     const startedAt = Date.now();
     toolStartData.set(buildToolStartKey(runId, toolCallId), {
       startTime: startedAt,
