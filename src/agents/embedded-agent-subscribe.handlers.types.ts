@@ -19,6 +19,7 @@ import type {
 import type { BlockReplyPayload } from "./embedded-agent-payloads.js";
 import type { EmbeddedRunReplayState } from "./embedded-agent-runner/replay-state.js";
 import type { EmbeddedRunLivenessState } from "./embedded-agent-runner/types.js";
+import type { IterationTracker } from "./pi-embedded-iteration-tracker.js";
 import type {
   BlockReplyChunking,
   SubscribeEmbeddedAgentSessionParams,
@@ -191,6 +192,7 @@ export type EmbeddedAgentSubscribeContext = {
   blockChunking?: BlockReplyChunking;
   blockChunker: EmbeddedBlockChunker | null;
   hookRunner?: HookRunner;
+  iterationTracker?: IterationTracker;
   builtinToolNames?: ReadonlySet<string>;
   trustedLocalMediaToolNames?: ReadonlySet<string>;
   noteLastAssistant: (msg: AgentMessage) => void;
@@ -337,6 +339,7 @@ export type ToolHandlerContext = {
   state: ToolHandlerState;
   log: EmbeddedSubscribeLogger;
   hookRunner?: HookRunner;
+  iterationTracker?: IterationTracker;
   builtinToolNames?: ReadonlySet<string>;
   trustedLocalMediaToolNames?: ReadonlySet<string>;
   flushBlockReplyBuffer: () => void | Promise<void>;

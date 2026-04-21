@@ -1,0 +1,3 @@
+[submodule "submodules/langfuse_tracer"]
+	path = submodules/langfuse_tracer
+	url = https://github.com/syao-dai/openclaw_langfuse_tracer.git
