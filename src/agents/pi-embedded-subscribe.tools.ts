@@ -13,16 +13,33 @@ import { collectTextContentBlocks } from "./content-blocks.js";
 import { isMessageToolSendActionName } from "./pi-embedded-messaging.js";
 import type { MessagingToolSend } from "./pi-embedded-messaging.types.js";
 import { normalizeToolName } from "./tool-policy.js";
+import { log } from "./pi-embedded-runner/logger.js";
 
-const TOOL_RESULT_MAX_CHARS = 8000;
+const TOOL_RESULT_MAX_CHARS = 40_000;  // Increased from 8000 to align with tool-result-truncation limit
 const TOOL_ERROR_MAX_CHARS = 400;
 const TOOL_DENIAL_ERROR_CODES = ["SYSTEM_RUN_DENIED", "INVALID_REQUEST"] as const;
 
 function truncateToolText(text: string): string {
-  if (text.length <= TOOL_RESULT_MAX_CHARS) {
+  const originalLength = text.length;
+  
+  if (originalLength <= TOOL_RESULT_MAX_CHARS) {
+    log.info(
+      `[tool-result-early-truncation] Tool text within limit: ` +
+        `length=${originalLength}, maxChars=${TOOL_RESULT_MAX_CHARS}, needsTruncation=false`,
+    );
     return text;
   }
-  return `${truncateUtf16Safe(text, TOOL_RESULT_MAX_CHARS)}\n…(truncated)…`;
+  
+  const truncated = `${truncateUtf16Safe(text, TOOL_RESULT_MAX_CHARS)}\n…(truncated)…`;
+  
+  log.info(
+    `[tool-result-early-truncation] Tool text TRUNCATED: ` +
+      `originalLength=${originalLength}, maxChars=${TOOL_RESULT_MAX_CHARS}, ` +
+      `truncatedLength=${truncated.length}, ` +
+      `reduced=${originalLength - truncated.length} chars (${ ((1 - truncated.length / originalLength) * 100).toFixed(1)}%)`,
+  );
+  
+  return truncated;
 }
 
 function normalizeToolErrorText(text: string): string | undefined {

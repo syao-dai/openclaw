@@ -8,7 +8,8 @@ import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGateway } from "../../gateway/call.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
-import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { normalizeDeliveryContext } from "../../utils/delivery-context.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import {
   findAcpUnsupportedInheritedToolAllow,
@@ -17,6 +18,10 @@ import {
   formatAcpInheritedToolDenyError,
 } from "../inherited-tool-deny.js";
 import { optionalStringEnum } from "../schema/typebox.js";
+import {
+  readLatestAssistantReply,
+  waitForAgentRun,
+} from "../run-wait.js";
 import type { SpawnedToolContext } from "../spawned-context.js";
 import { registerSubagentRun } from "../subagent-registry.js";
 import { resolveSubagentSpawnOwnership } from "../subagent-spawn-ownership.js";
@@ -26,6 +31,7 @@ import {
   spawnSubagentDirect,
 } from "../subagent-spawn.js";
 import { normalizeSubagentTaskName } from "../subagent-task-name.js";
+import { resolveConfiguredSubagentRunTimeoutSeconds } from "../subagent-spawn-plan.js";
 import {
   describeSessionsSpawnTool,
   SESSIONS_SPAWN_SUBAGENT_TOOL_DISPLAY_SUMMARY,
@@ -38,6 +44,8 @@ import {
   readStringParam,
   ToolInputError,
 } from "./common.js";
+
+const log = createSubsystemLogger("agents/tools/sessions-spawn");
 
 const SESSIONS_SPAWN_RUNTIMES = ["subagent", "acp"] as const;
 const SESSIONS_SPAWN_SANDBOX_MODES = ["inherit", "require"] as const;
@@ -302,6 +310,17 @@ export function createSessionsSpawnTool(
       const cleanup =
         params.cleanup === "keep" || params.cleanup === "delete" ? params.cleanup : "keep";
       const expectsCompletionMessage = params.expectsCompletionMessage !== false;
+
+      // Log the initial spawn request
+      log.info(
+        `[sessions_spawn] ENTRY: Agent A (${opts?.agentSessionKey || "unknown"}) spawning Agent B`,
+      );
+      log.info(
+        `[sessions_spawn] Parameters: runtime=${runtime}, agentId=${requestedAgentId || "<same>"}, mode=${mode || "auto"}, expectsCompletionMessage=${expectsCompletionMessage}`,
+      );
+      log.info(
+        `[sessions_spawn] Task: "${task.length > 100 ? task.substring(0, 100) + "..." : task}"`,
+      );
       const sandbox = params.sandbox === "require" ? "require" : "inherit";
       const context =
         params.context === "fork" || params.context === "isolated" ? params.context : undefined;
@@ -365,6 +384,12 @@ export function createSessionsSpawnTool(
         : undefined;
 
       if (runtime === "acp") {
+        log.info(
+          `[sessions_spawn] RUNTIME_PATH: ACP (spawning via spawnAcpDirect)`,
+        );
+        log.info(
+          `[sessions_spawn] ACP Config: streamTo=${streamTo || "none"}, resumeSessionId=${resumeSessionId || "none"}`,
+        );
         const { isSpawnAcpAcceptedResult, spawnAcpDirect } = await loadAcpSpawnModule();
         if (Array.isArray(attachments) && attachments.length > 0) {
           return jsonResult({
@@ -374,6 +399,10 @@ export function createSessionsSpawnTool(
             ...roleContext,
           });
         }
+        const startTime = Date.now();
+        log.info(
+          `[sessions_spawn] ACP: Calling spawnAcpDirect() at ${new Date(startTime).toISOString()}...`,
+        );
         const result = await spawnAcpDirect(
           {
             task,
@@ -402,6 +431,14 @@ export function createSessionsSpawnTool(
             inheritedToolAllowlist: opts?.inheritedToolAllowlist,
             inheritedToolDenylist: opts?.inheritedToolDenylist,
           },
+        );
+        const endTime = Date.now();
+        const elapsedMs = endTime - startTime;
+        log.info(
+          `[sessions_spawn] ACP: spawnAcpDirect() returned after ${elapsedMs}ms at ${new Date(endTime).toISOString()}`,
+        );
+        log.info(
+          `[sessions_spawn] ACP Result: status=${result.status}, runId=${(result as any).runId || "none"}`,
         );
         const childSessionKey = result.childSessionKey?.trim();
         const childRunId = isSpawnAcpAcceptedResult(result) ? result.runId?.trim() : undefined;
@@ -432,6 +469,9 @@ export function createSessionsSpawnTool(
             ? false
             : expectsCompletionMessage;
           try {
+            log.info(
+              `[sessions_spawn] ACP: Registering subagent run in registry with expectsCompletionMessage=${expectsCompletionMessage}`,
+            );
             registerSubagentRun({
               runId: childRunId,
               childSessionKey,
@@ -447,6 +487,9 @@ export function createSessionsSpawnTool(
               expectsCompletionMessage: shouldExpectCompletionMessage,
               spawnMode: trackedSpawnMode,
             });
+            log.info(
+              `[sessions_spawn] ACP: Successfully registered. childSessionKey=${childSessionKey}`,
+            );
           } catch (err) {
             // Best-effort only: the ACP turn was already started above, so deleting the
             // child session record here does not guarantee the in-flight run was aborted.
@@ -460,8 +503,27 @@ export function createSessionsSpawnTool(
             });
           }
         }
-        return jsonResult(addRoleToFailureResult(result, requestedAgentId));
+        log.info(
+          `[sessions_spawn] ACP: IMMEDIATE_RETURN with status=${result.status} (Agent A continues immediately)`,
+        );
+        return jsonResult(result);
       }
+
+      // Subagent runtime path
+      log.info(
+        `[sessions_spawn] RUNTIME_PATH: SUBAGENT (spawning via spawnSubagentDirect)`,
+      );
+      log.info(
+        `[sessions_spawn] SUBAGENT Config: sandbox=${sandbox}, lightContext=${lightContext}, thread=${thread}`,
+      );
+      
+      const startTime = Date.now();
+      log.info(
+        `[sessions_spawn] SUBAGENT: Calling spawnSubagentDirect() at ${new Date(startTime).toISOString()}...`,
+      );
+      log.info(
+        `[sessions_spawn] SUBAGENT: expectsCompletionMessage=${expectsCompletionMessage} (${expectsCompletionMessage ? "WILL WAIT for Agent B completion" : "IMMEDIATE return"})`,
+      );
 
       const result = await spawnSubagentDirect(
         {
@@ -504,7 +566,128 @@ export function createSessionsSpawnTool(
         },
       );
 
-      return jsonResult(addRoleToFailureResult(result, requestedAgentId));
+      const spawnEndTime = Date.now();
+      const spawnElapsedMs = spawnEndTime - startTime;
+      log.info(
+        `[sessions_spawn] SUBAGENT: spawnSubagentDirect() returned after ${spawnElapsedMs}ms at ${new Date(spawnEndTime).toISOString()}`,
+      );
+      log.info(
+        `[sessions_spawn] SUBAGENT Result: status=${result.status}, runId=${result.runId || "none"}, childSessionKey=${result.childSessionKey || "none"}`,
+      );
+      
+      // If expectsCompletionMessage is true, wait for Agent B to complete and read its result
+      if (expectsCompletionMessage && result.status === "accepted" && result.runId && result.childSessionKey) {
+        log.info(
+          `[sessions_spawn] SUBAGENT: SYNCHRONOUS MODE - Now waiting for Agent B (runId=${result.runId}) to complete...`,
+        );
+        
+        // Resolve the actual runTimeoutSeconds from config if not explicitly set
+        const cfg = loadConfig();
+        const resolvedRunTimeoutSeconds = resolveConfiguredSubagentRunTimeoutSeconds({
+          cfg,
+          runTimeoutSeconds,
+        });
+        
+        log.info(
+          `[sessions_spawn] SUBAGENT: Resolved runTimeoutSeconds=${resolvedRunTimeoutSeconds} (from tool param: ${runTimeoutSeconds ?? "none"}, from config: ${cfg?.agents?.defaults?.subagents?.runTimeoutSeconds ?? "none"})`,
+        );
+        
+        const waitTimeoutMs = (resolvedRunTimeoutSeconds || 300) * 1000 + 10000; // timeout + 10s buffer
+        const waitStartTime = Date.now();
+        
+        try {
+          log.info(
+            `[sessions_spawn] SUBAGENT: Calling waitForAgentRun() with timeout=${waitTimeoutMs}ms...`,
+          );
+          
+          const waitResult = await waitForAgentRun({
+            runId: result.runId,
+            timeoutMs: waitTimeoutMs,
+          });
+          
+          const waitEndTime = Date.now();
+          const waitElapsedMs = waitEndTime - waitStartTime;
+          
+          log.info(
+            `[sessions_spawn] SUBAGENT: waitForAgentRun() completed with status=${waitResult.status} after ${waitElapsedMs}ms`,
+          );
+          
+          if (waitResult.status === "ok") {
+            // Agent B completed successfully, read its result
+            log.info(
+              `[sessions_spawn] SUBAGENT: Agent B completed successfully. Reading result from ${result.childSessionKey}...`,
+            );
+            
+            const agentBResult = await readLatestAssistantReply({
+              sessionKey: result.childSessionKey,
+              limit: 50,
+            });
+            
+            const totalElapsedMs = Date.now() - startTime;
+            
+            if (agentBResult) {
+              log.info(
+                `[sessions_spawn] SUBAGENT: SUCCESS - Got Agent B result (${agentBResult.length} chars) after total ${totalElapsedMs}ms`,
+              );
+              
+              // Return the actual result from Agent B
+              return jsonResult({
+                status: "completed",
+                childSessionKey: result.childSessionKey,
+                runId: result.runId,
+                mode: result.mode,
+                result: agentBResult,
+                runtime: {
+                  spawnMs: spawnElapsedMs,
+                  waitMs: waitElapsedMs,
+                  totalMs: totalElapsedMs,
+                },
+                modelApplied: result.modelApplied,
+              });
+            } else {
+              log.warn(
+                `[sessions_spawn] SUBAGENT: Agent B completed but no result found. Falling back to accepted status.`,
+              );
+            }
+          } else if (waitResult.status === "timeout") {
+            log.warn(
+              `[sessions_spawn] SUBAGENT: Wait TIMEOUT after ${waitElapsedMs}ms. Returning accepted status with timeout note.`,
+            );
+            return jsonResult({
+              ...result,
+              note: `Subagent started but timed out after ${Math.round(waitElapsedMs / 1000)}s. Check /subagents list for status. Original note: ${result.note || ""}`,
+            });
+          } else {
+            log.warn(
+              `[sessions_spawn] SUBAGENT: Wait ERROR status=${waitResult.status}, error=${waitResult.error}. Returning accepted status.`,
+            );
+            return jsonResult({
+              ...result,
+              note: `Subagent started but wait failed (${waitResult.status}). Check /subagents list for status. Original note: ${result.note || ""}`,
+            });
+          }
+        } catch (err) {
+          const waitErrorMs = Date.now() - waitStartTime;
+          log.error(
+            `[sessions_spawn] SUBAGENT: Wait exception after ${waitErrorMs}ms: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          // Fall through to return accepted status
+        }
+      } else if (expectsCompletionMessage) {
+        log.info(
+          `[sessions_spawn] SUBAGENT: SYNCHRONOUS MODE requested but spawn did not return accepted status or missing runId/childSessionKey. Returning as-is.`,
+        );
+      } else {
+        log.info(
+          `[sessions_spawn] SUBAGENT: ASYNCHRONOUS MODE - Agent A received immediate acceptance (Agent B may still be running)`,
+        );
+      }
+      
+      log.info(
+        `[sessions_spawn] EXIT: Returning tool result to Agent A`,
+      );
+
+      return jsonResult(result);
     },
   };
 }
