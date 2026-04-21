@@ -23,6 +23,8 @@ import type {
   PluginHookAgentEndEvent,
   PluginHookBeforeAgentFinalizeEvent,
   PluginHookBeforeAgentFinalizeResult,
+  PluginHookAgentIterationStartEvent,
+  PluginHookAgentIterationEndEvent,
   PluginHookBeforeAgentReplyEvent,
   PluginHookBeforeAgentReplyResult,
   PluginHookBeforeAgentStartEvent,
@@ -123,6 +125,8 @@ export type {
   PluginHookBeforeAgentFinalizeEvent,
   PluginHookBeforeAgentFinalizeResult,
   PluginHookAgentEndEvent,
+  PluginHookAgentIterationStartEvent,
+  PluginHookAgentIterationEndEvent,
   PluginHookBeforeCompactionEvent,
   PluginHookBeforeResetEvent,
   PluginHookInboundClaimContext,
@@ -983,6 +987,30 @@ export function createHookRunner(
   }
 
   /**
+   * Run agent_iteration_start hook.
+   * Allows plugins to observe each LLM iteration start.
+   * Runs in parallel (fire-and-forget).
+   */
+  async function runAgentIterationStart(
+    event: PluginHookAgentIterationStartEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<void> {
+    return runVoidHook("agent_iteration_start", event, ctx);
+  }
+
+  /**
+   * Run agent_iteration_end hook.
+   * Allows plugins to observe each LLM iteration completion.
+   * Runs in parallel (fire-and-forget).
+   */
+  async function runAgentIterationEnd(
+    event: PluginHookAgentIterationEndEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<void> {
+    return runVoidHook("agent_iteration_end", event, ctx);
+  }
+
+  /**
    * Run before_compaction hook.
    */
   async function runBeforeCompaction(
@@ -1651,6 +1679,8 @@ export function createHookRunner(
     runLlmOutput,
     runBeforeAgentFinalize,
     runAgentEnd,
+    runAgentIterationStart,
+    runAgentIterationEnd,
     runBeforeCompaction,
     runAfterCompaction,
     runBeforeReset,
