@@ -666,6 +666,20 @@ export function handleMessageEnd(
   ctx.noteLastAssistant(assistantMessage);
   ctx.recordAssistantUsage((assistantMessage as { usage?: unknown }).usage);
   ctx.commitAssistantUsage();
+
+  // 🔥 Fire agent_iteration_end hook if this message contains tool calls
+  if (ctx.iterationTracker) {
+    ctx.iterationTracker.onIterationEnd({
+      assistantMessage,
+      hookContext: {
+        runId: ctx.params.runId,
+        agentId: ctx.params.agentId,
+        sessionKey: ctx.params.sessionKey,
+        sessionId: ctx.params.sessionId,
+      },
+    });
+  }
+
   if (suppressVisibleAssistantOutput) {
     return;
   }
