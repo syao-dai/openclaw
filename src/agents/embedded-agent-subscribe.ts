@@ -58,6 +58,7 @@ import { mediaUrlsFromGeneratedAttachments } from "./generated-attachments.js";
 import type { AgentRunTimeoutPhase } from "./run-timeout-attribution.js";
 import type { AgentMessage } from "./runtime/index.js";
 import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "./usage.js";
+import { createIterationTracker } from "./pi-embedded-iteration-tracker.js";
 
 const STREAM_STRIPPED_BLOCK_TAG_NAMES = [
   "final",
@@ -1249,6 +1250,19 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     }
   };
 
+  // Create iteration tracker for agent_iteration_start/end hooks
+  const iterationTracker = params.hookRunner
+    ? createIterationTracker({
+        runId: params.runId,
+        sessionId: (params.session as { id?: string }).id ?? params.sessionId ?? "",
+        provider: (params.session as { agent?: { modelProvider?: string } }).agent
+          ?.modelProvider ?? "",
+        model: (params.session as { agent?: { modelId?: string } }).agent?.modelId ?? "",
+        hookRunner: params.hookRunner,
+        log,
+      })
+    : undefined;
+
   const ctx: EmbeddedAgentSubscribeContext = {
     params,
     state,
@@ -1256,6 +1270,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     blockChunking,
     blockChunker,
     hookRunner: params.hookRunner,
+    iterationTracker,
     builtinToolNames: params.builtinToolNames,
     trustedLocalMediaToolNames: params.trustedLocalMediaToolNames,
     noteLastAssistant,
