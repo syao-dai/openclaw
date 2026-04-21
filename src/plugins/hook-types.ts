@@ -61,6 +61,8 @@ export type PluginHookName =
   | "llm_input"
   | "llm_output"
   | "agent_end"
+  | "agent_iteration_start"
+  | "agent_iteration_end"
   | "before_compaction"
   | "after_compaction"
   | "before_reset"
@@ -92,6 +94,8 @@ export const PLUGIN_HOOK_NAMES = [
   "llm_input",
   "llm_output",
   "agent_end",
+  "agent_iteration_start",
+  "agent_iteration_end",
   "before_compaction",
   "after_compaction",
   "before_reset",
@@ -193,6 +197,35 @@ export type PluginHookAgentEndEvent = {
   success: boolean;
   error?: string;
   durationMs?: number;
+};
+
+export type PluginHookAgentIterationStartEvent = {
+  runId: string;
+  sessionId: string;
+  iterationId: number;
+  toolResults?: unknown[];
+  messages: unknown[];
+  provider: string;
+  model: string;
+};
+
+export type PluginHookAgentIterationEndEvent = {
+  runId: string;
+  sessionId: string;
+  iterationId: number;
+  assistantMessage?: unknown;
+  toolCalls: Array<{
+    id?: string;
+    name: string;
+    arguments?: string;
+  }>;
+  usage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
 };
 
 export type PluginHookBeforeCompactionEvent = {
@@ -598,6 +631,14 @@ export type PluginHookHandlerMap = {
     ctx: PluginHookAgentContext,
   ) => Promise<void> | void;
   agent_end: (event: PluginHookAgentEndEvent, ctx: PluginHookAgentContext) => Promise<void> | void;
+  agent_iteration_start: (
+    event: PluginHookAgentIterationStartEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<void> | void;
+  agent_iteration_end: (
+    event: PluginHookAgentIterationEndEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<void> | void;
   before_compaction: (
     event: PluginHookBeforeCompactionEvent,
     ctx: PluginHookAgentContext,

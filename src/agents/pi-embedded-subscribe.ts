@@ -31,6 +31,7 @@ import { filterToolResultMediaUrls } from "./pi-embedded-subscribe.tools.js";
 import type { SubscribeEmbeddedPiSessionParams } from "./pi-embedded-subscribe.types.js";
 import { formatReasoningMessage, stripDowngradedToolCallText } from "./pi-embedded-utils.js";
 import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "./usage.js";
+import { createIterationTracker } from "./pi-embedded-iteration-tracker.js";
 
 const THINKING_TAG_SCAN_RE = /<\s*(\/?)\s*(?:think(?:ing)?|thought|antthinking)\s*>/gi;
 const FINAL_TAG_SCAN_RE = /<\s*(\/?)\s*final\s*>/gi;
@@ -722,6 +723,19 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     }
   };
 
+  // 🔥 Create iteration tracker for agent_iteration_start/end hooks
+  const iterationTracker = params.hookRunner
+    ? createIterationTracker({
+        runId: params.runId,
+        sessionId: (params.session as { id?: string }).id ?? params.sessionId ?? "",
+        provider: (params.session as { agent?: { modelProvider?: string } }).agent
+          ?.modelProvider ?? "",
+        model: (params.session as { agent?: { modelId?: string } }).agent?.modelId ?? "",
+        hookRunner: params.hookRunner,
+        log,
+      })
+    : undefined;
+
   const ctx: EmbeddedPiSubscribeContext = {
     params,
     state,
@@ -729,6 +743,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     blockChunking,
     blockChunker,
     hookRunner: params.hookRunner,
+    iterationTracker,
     builtinToolNames: params.builtinToolNames,
     noteLastAssistant,
     shouldEmitToolResult,
