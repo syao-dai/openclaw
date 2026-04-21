@@ -7,6 +7,24 @@ const MIN_JOB_TTL_MS = 60 * 1000; // 1 minute
 const MAX_JOB_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
 const DEFAULT_PENDING_OUTPUT_CHARS = 30_000;
 
+/**
+ * Maximum characters to keep in process tail for display.
+ * The tail shows the LAST N characters of process output.
+ * Full output is always preserved in aggregated field.
+ * 
+ * Configuration:
+ * - Default: 10,000 chars (increased from 2,000)
+ * - For data-heavy workloads: 40,000 chars
+ * - Maximum recommended: 120,000 chars
+ */
+export const PROCESS_TAIL_MAX_CHARS = 40_000;
+
+/**
+ * Enable/disable logging for process tail truncation.
+ * Set to false in production to reduce log volume.
+ */
+const ENABLE_PROCESS_TAIL_LOGS = true;
+
 function clampTtl(value: number | undefined) {
   if (!value || Number.isNaN(value)) {
     return DEFAULT_JOB_TTL_MS;
@@ -132,7 +150,7 @@ export function appendOutput(session: ProcessSession, stream: "stdout" | "stderr
   session.truncated =
     session.truncated || aggregated.length < session.aggregated.length + chunk.length;
   session.aggregated = aggregated;
-  session.tail = tail(session.aggregated, 2000);
+  session.tail = tail(session.aggregated, PROCESS_TAIL_MAX_CHARS);
 }
 
 export function drainSession(session: ProcessSession) {
@@ -154,7 +172,7 @@ export function markExited(
   session.exited = true;
   session.exitCode = exitCode;
   session.exitSignal = exitSignal;
-  session.tail = tail(session.aggregated, 2000);
+  session.tail = tail(session.aggregated, PROCESS_TAIL_MAX_CHARS);
   moveToFinished(session, status);
 }
 
@@ -216,11 +234,39 @@ function moveToFinished(session: ProcessSession, status: ProcessStatus) {
   });
 }
 
-export function tail(text: string, max = 2000) {
+/**
+ * Extract the tail (last N characters) of text.
+ * Used for process output display to show recent output.
+ * 
+ * @param text - Full text content
+ * @param max - Maximum characters to keep (default: PROCESS_TAIL_MAX_CHARS)
+ * @returns Last N characters of text, or full text if shorter
+ */
+export function tail(text: string, max = PROCESS_TAIL_MAX_CHARS) {
   if (text.length <= max) {
+    if (ENABLE_PROCESS_TAIL_LOGS && text.length > 0) {
+      console.log(
+        `[process-tail] Text within limit: ` +
+          `length=${text.length}, max=${max}, needsTruncation=false`,
+      );
+    }
     return text;
   }
-  return text.slice(text.length - max);
+  
+  const truncated = text.slice(text.length - max);
+  
+  if (ENABLE_PROCESS_TAIL_LOGS) {
+    const discarded = text.length - truncated.length;
+    const discardedPercent = ((discarded / text.length) * 100).toFixed(1);
+    console.log(
+      `[process-tail] TAIL TRUNCATION: ` +
+        `originalLength=${text.length}, max=${max}, ` +
+        `keptLength=${truncated.length}, ` +
+        `discarded=${discarded} chars (${discardedPercent}% of original)`,
+    );
+  }
+  
+  return truncated;
 }
 
 function sumPendingChars(buffer: string[]) {

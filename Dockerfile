@@ -222,6 +222,69 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
       chown -R node:node /home/node/.cache/ms-playwright; \
     fi
 
+# Install Python 3.13 and uv package manager.
+# Python 3.13 is built from source for maximum compatibility.
+# uv is a fast Python package installer and resolver.
+RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential \
+      libssl-dev \
+      zlib1g-dev \
+      libncurses5-dev \
+      libncursesw5-dev \
+      libreadline-dev \
+      libsqlite3-dev \
+      libgdbm-dev \
+      libdb5.3-dev \
+      libbz2-dev \
+      libexpat1-dev \
+      liblzma-dev \
+      libffi-dev \
+      uuid-dev \
+      wget && \
+    # Download and build Python 3.13
+    cd /tmp && \
+    wget -q https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tar.xz && \
+    tar -xf Python-3.13.1.tar.xz && \
+    cd Python-3.13.1 && \
+    ./configure --enable-optimizations --with-ensurepip=install && \
+    make -j$(nproc) && \
+    make altinstall && \
+    cd / && \
+    rm -rf /tmp/Python-3.13.1* && \
+    # Create python3 symlink to python3.13
+    update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.13 1 && \
+    update-alternatives --install /usr/bin/pip3 pip3 /usr/local/bin/pip3.13 1 && \
+    # Install uv package manager
+    curl --retry 5 --retry-all-errors --retry-delay 2 -LsSf https://astral.sh/uv/install.sh | sh && \
+    # Move uv to system-wide location
+    mv /root/.local/bin/uv /usr/local/bin/uv && \
+    mv /root/.local/bin/uvx /usr/local/bin/uvx && \
+    # Verify installations before cleanup
+    python3 --version && \
+    uv --version && \
+    # Clean up build dependencies to reduce image size
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y \
+      build-essential \
+      libssl-dev \
+      zlib1g-dev \
+      libncurses5-dev \
+      libncursesw5-dev \
+      libreadline-dev \
+      libsqlite3-dev \
+      libgdbm-dev \
+      libdb5.3-dev \
+      libbz2-dev \
+      libexpat1-dev \
+      liblzma-dev \
+      libffi-dev \
+      uuid-dev \
+      wget && \
+    apt-get autoremove -y
+
+
 # Optionally install Docker CLI for sandbox container management.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1 ...
 # Adds ~50MB. Only the CLI is installed — no Docker daemon.
@@ -259,6 +322,13 @@ RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /app/openclaw.mjs
 
 ENV NODE_ENV=production
+
+# preload necessary skills
+RUN npm install -g mcporter
+
+# AWS CLI
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"; unzip awscliv2.zip; ./aws/install
+
 
 # Security hardening: Run as non-root user
 # The node:24-bookworm image includes a 'node' user (uid 1000)
