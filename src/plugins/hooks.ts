@@ -1139,6 +1139,8 @@ export function createHookRunner(
       ctx: HookContext<"agent_end">,
       optionsLocal?: VoidHookRunOptions,
     ) => runVoidHook("agent_end", projectAgentEndEvent(event, ctx), ctx, optionsLocal),
+    runAgentIterationStart: bindVoidHook("agent_iteration_start"),
+    runAgentIterationEnd: bindVoidHook("agent_iteration_end"),
     runBeforeCompaction: bindVoidHook("before_compaction"),
     runAfterCompaction: bindVoidHook("after_compaction"),
     runBeforeReset: bindVoidHook("before_reset"),

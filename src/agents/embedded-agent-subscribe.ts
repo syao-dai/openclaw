@@ -34,6 +34,7 @@ import {
   filterToolResultMediaUrls,
 } from "./embedded-agent-tool-media.js";
 import { stripDowngradedToolCallText } from "./embedded-agent-utils.js";
+import { createIterationTracker } from "./pi-embedded-iteration-tracker.js";
 import { sessionManagerReadTranscriptStart } from "./sessions/session-manager-current-turn.js";
 import { setSessionModelUsageSink } from "./sessions/session-model-usage.js";
 
@@ -355,6 +356,19 @@ export function subscribeEmbeddedAgentSession(input: SubscribeEmbeddedAgentSessi
     state.hasFlushedPartialText = Boolean(visibleText);
   };
 
+  // Create iteration tracker for agent_iteration_start/end hooks
+  const iterationTracker = params.hookRunner
+    ? createIterationTracker({
+        runId: params.runId,
+        sessionId: (params.session as { id?: string }).id ?? params.sessionId ?? "",
+        provider: (params.session as { agent?: { modelProvider?: string } }).agent
+          ?.modelProvider ?? "",
+        model: (params.session as { agent?: { modelId?: string } }).agent?.modelId ?? "",
+        hookRunner: params.hookRunner,
+        log,
+      })
+    : undefined;
+
   const ctx: EmbeddedAgentSubscribeContext = {
     ...streamRendering,
     params,
@@ -363,6 +377,7 @@ export function subscribeEmbeddedAgentSession(input: SubscribeEmbeddedAgentSessi
     blockChunking,
     blockChunker,
     hookRunner: params.hookRunner,
+    iterationTracker,
     builtinToolNames: params.builtinToolNames,
     trustedLocalMediaToolNames: params.trustedLocalMediaToolNames,
     noteLastAssistant,
