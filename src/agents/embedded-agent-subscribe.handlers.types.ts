@@ -296,6 +296,7 @@ type ToolHandlerParams = Pick<
   | "toolResultFormat"
   | "toolProgressDetail"
   | "sourceReplyDeliveryMode"
+  | "session"
 >;
 
 type ToolHandlerState = Pick<
