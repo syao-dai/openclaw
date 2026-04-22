@@ -961,10 +961,12 @@ export function handleToolExecutionStart(
     // 🔥 Fire agent_iteration_start hook before first tool in this iteration
     const isFirstToolInIteration = ctx.state.itemActiveIds.size === 0;
     if (isFirstToolInIteration && ctx.iterationTracker) {
-      // Note: messages from session.agent.state are not directly accessible from ToolHandlerContext
-      // We'll pass empty array for now, as the hook is primarily for observability
-      // and the important data (tool results) will be available in subsequent iterations
-      const messages: unknown[] = [];
+      // Try to get messages from session.agent.state if available
+      const sessionManager = ctx.params.session as {
+        agent?: { state?: { messages?: unknown[] } };
+      } | undefined;
+      const messages = sessionManager?.agent?.state?.messages ?? [];
+      
       ctx.iterationTracker.onIterationStart({
         messages,
         hookContext: {
