@@ -1,3 +1,9 @@
 [submodule "submodules/langfuse_tracer"]
 	path = submodules/langfuse_tracer
 	url = https://github.com/syao-dai/openclaw_langfuse_tracer.git
+[submodule "submodules/postgres-mcp"]
+	path = submodules/postgres-mcp
+	url = https://github.com/syao-dai/postgres-mcp.git
+[submodule "submodules/langfuse_python"]
+	path = submodules/langfuse_python
+	url = https://github.com/langfuse/langfuse-python.git
