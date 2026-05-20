@@ -306,6 +306,13 @@ async function prepareAgentCommandExecution(
   const isSubagentLane = laneRaw === subagentLane;
   const timeoutSecondsRaw =
     opts.timeout !== undefined ? Number.parseInt(opts.timeout, 10) : isSubagentLane ? 0 : undefined;
+  // Log timeout parsing for debugging
+  console.log(
+    `[agent-command] Timeout parsing: ` +
+    `opts.timeout=${opts.timeout ?? "undefined"} (type=${typeof opts.timeout}), ` +
+    `isSubagentLane=${isSubagentLane}, ` +
+    `parsed timeoutSecondsRaw=${timeoutSecondsRaw ?? "undefined"}`
+  );
   if (
     timeoutSecondsRaw !== undefined &&
     (Number.isNaN(timeoutSecondsRaw) || timeoutSecondsRaw < 0)
@@ -316,6 +323,12 @@ async function prepareAgentCommandExecution(
     cfg,
     overrideSeconds: timeoutSecondsRaw,
   });
+  // Log final resolved timeout
+  console.log(
+    `[agent-command] Final timeout: ` +
+    `overrideSeconds=${timeoutSecondsRaw ?? "undefined"}, ` +
+    `resolved timeoutMs=${timeoutMs}`
+  );
 
   const sessionResolution = resolveSession({
     cfg,

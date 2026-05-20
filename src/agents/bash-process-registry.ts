@@ -17,7 +17,7 @@ const DEFAULT_PENDING_OUTPUT_CHARS = 30_000;
  * - For data-heavy workloads: 40,000 chars
  * - Maximum recommended: 120,000 chars
  */
-export const PROCESS_TAIL_MAX_CHARS = 40_000;
+export const PROCESS_TAIL_MAX_CHARS = 60_000;
 
 /**
  * Enable/disable logging for process tail truncation.

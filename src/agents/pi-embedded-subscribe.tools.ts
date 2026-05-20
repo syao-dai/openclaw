@@ -13,7 +13,7 @@ import type { MessagingToolSend } from "./pi-embedded-messaging.types.js";
 import { normalizeToolName } from "./tool-policy.js";
 import { log } from "./pi-embedded-runner/logger.js";
 
-const TOOL_RESULT_MAX_CHARS = 40_000;  // Increased from 8000 to align with tool-result-truncation limit
+const TOOL_RESULT_MAX_CHARS = 60_000;  // Increased from 8000 to align with tool-result-truncation limit
 const TOOL_ERROR_MAX_CHARS = 400;
 
 function truncateToolText(text: string): string {

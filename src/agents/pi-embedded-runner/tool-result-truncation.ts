@@ -25,7 +25,7 @@ const MAX_TOOL_RESULT_CONTEXT_SHARE = 0.3;
  * for compaction summaries. For the live request path we still keep a bounded
  * request-local ceiling so oversized tool output cannot dominate the next turn.
  */
-export const DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS = 40_000;
+export const DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS = 60_000;
 
 /**
  * Backwards-compatible alias for older call sites/tests.
