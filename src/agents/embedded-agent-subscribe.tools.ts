@@ -28,7 +28,7 @@ import { readToolResultDetails, readToolResultStatus } from "./tool-result-error
 export { isToolResultError } from "./tool-result-error.js";
 import { log } from "./embedded-agent-runner/logger.js";
 
-const TOOL_RESULT_MAX_CHARS = 40_000;  // Increased from 8000 to align with tool-result-truncation limit
+const TOOL_RESULT_MAX_CHARS = 60_000;  // Increased from 8000 to align with tool-result-truncation limit
 const TOOL_ERROR_MAX_CHARS = 400;
 const TOOL_DENIAL_ERROR_CODES = ["SYSTEM_RUN_DENIED", "INVALID_REQUEST"] as const;
 
