@@ -1,7 +1,8 @@
 import { getSafeLocalStorage } from "../../local-storage.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
+import { normalizeAgentId, parseAgentSessionKey } from "../session-key.ts";
 import { normalizeLowercaseStringOrEmpty } from "../string-coerce.ts";
-import type { SessionsUsageResult, CostUsageSummary, SessionUsageTimeSeries } from "../types.ts";
+import type { SessionsUsageResult, CostUsageSummary, SessionUsageTimeSeries, AgentsListResult } from "../types.ts";
 import type { SessionLogEntry } from "../views/usage.ts";
 import {
   formatMissingOperatorReadScopeMessage,
@@ -28,6 +29,8 @@ export type UsageState = {
   usageSessionLogsLoading: boolean;
   usageTimeZone: "local" | "utc";
   settings?: { gatewayUrl?: string };
+  sessionKey: string;
+  agentsList: AgentsListResult | null;
 };
 
 const LEGACY_USAGE_DATE_PARAMS_STORAGE_KEY = "openclaw.control.usage.date-params.v1";
@@ -213,6 +216,12 @@ export async function loadUsage(
   try {
     const startDate = overrides?.startDate ?? state.usageStartDate;
     const endDate = overrides?.endDate ?? state.usageEndDate;
+    
+    // Resolve the effective agentId from the current session key or default
+    const sessionAgentId = parseAgentSessionKey(state.sessionKey)?.agentId;
+    const defaultAgentId = state.agentsList?.defaultId ?? "main";
+    const effectiveAgentId = normalizeAgentId(sessionAgentId ?? defaultAgentId);
+    
     const runUsageRequests = (includeDateInterpretation: boolean, includeUsageScope: boolean) => {
       const dateInterpretation = includeDateInterpretation
         ? buildDateInterpretationParams(state.usageTimeZone)
@@ -227,6 +236,7 @@ export async function loadUsage(
         client.request("sessions.usage", {
           startDate,
           endDate,
+          agentId: effectiveAgentId,
           ...dateInterpretation,
           ...usageScopeParams,
           limit: 1000, // Cap at 1000 sessions
