@@ -1,8 +1,9 @@
 // Control UI controller manages usage gateway state.
 import { getSafeLocalStorage } from "../../local-storage.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
+import { normalizeAgentId, parseAgentSessionKey } from "../session-key.ts";
 import { normalizeLowercaseStringOrEmpty } from "../string-coerce.ts";
-import type { SessionsUsageResult, CostUsageSummary, SessionUsageTimeSeries } from "../types.ts";
+import type { SessionsUsageResult, CostUsageSummary, SessionUsageTimeSeries, AgentsListResult } from "../types.ts";
 import type { SessionLogEntry } from "../views/usage.ts";
 import {
   formatMissingOperatorReadScopeMessage,
@@ -31,6 +32,8 @@ export type UsageState = {
   usageSessionLogsLoading: boolean;
   usageTimeZone: "local" | "utc";
   settings?: { gatewayUrl?: string };
+  sessionKey: string;
+  agentsList: AgentsListResult | null;
 };
 
 const LEGACY_USAGE_DATE_PARAMS_STORAGE_KEY = "openclaw.control.usage.date-params.v1";
@@ -277,7 +280,10 @@ export async function loadUsage(
   try {
     const startDate = overrides?.startDate ?? state.usageStartDate;
     const endDate = overrides?.endDate ?? state.usageEndDate;
-    const agentId = normalizeLowercaseStringOrEmpty(state.usageAgentId ?? "") || undefined;
+    // Resolve the effective agentId from the current session key or default
+    const sessionAgentId = parseAgentSessionKey(state.sessionKey)?.agentId;
+    const defaultAgentId = state.agentsList?.defaultId ?? "main";
+    const agentId = normalizeAgentId(sessionAgentId ?? defaultAgentId) || undefined;
     const runUsageRequests = (
       includeDateInterpretation: boolean,
       includeUsageScope: boolean,

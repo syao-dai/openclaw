@@ -589,7 +589,7 @@ export function createSessionsSpawnTool(
         );
         
         // Resolve the actual runTimeoutSeconds from config if not explicitly set
-        const cfg = loadConfig();
+        const cfg = getRuntimeConfig();
         const resolvedRunTimeoutSeconds = resolveConfiguredSubagentRunTimeoutSeconds({
           cfg,
           runTimeoutSeconds,

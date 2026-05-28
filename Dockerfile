@@ -23,6 +23,16 @@ ARG OPENCLAW_BUN_IMAGE="docker.io/oven/bun:1.3.13@sha256:87416c977a612a204eb54ab
 # docker.io/library/node:24-bookworm-slim (or podman) and replace the digests below with the
 # current multi-arch manifest list entries.
 
+# ── Stage 0: Fetch langfuse skill from upstream repo ───────────
+# Uses sparse checkout to pull only skills/langfuse, keeping the layer small.
+FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS langfuse-skill
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git && \
+    git clone --depth 1 --filter=blob:none --sparse \
+      https://github.com/langfuse/skills.git /tmp/langfuse-skills && \
+    cd /tmp/langfuse-skills && \
+    git sparse-checkout set skills/langfuse
+
 FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS workspace-deps
 ARG OPENCLAW_EXTENSIONS
 ARG OPENCLAW_BUNDLED_PLUGIN_DIR
@@ -199,6 +209,7 @@ COPY --from=runtime-assets --chown=node:node /app/openclaw.mjs .
 COPY --from=runtime-assets --chown=node:node /app/src/agents/templates ./src/agents/templates
 COPY --from=runtime-assets --chown=node:node /app/${OPENCLAW_BUNDLED_PLUGIN_DIR} ./${OPENCLAW_BUNDLED_PLUGIN_DIR}
 COPY --from=runtime-assets --chown=node:node /app/skills ./skills
+COPY --from=langfuse-skill --chown=node:node /tmp/langfuse-skills/skills/langfuse ./skills/langfuse
 COPY --from=runtime-assets --chown=node:node /app/docs ./docs
 COPY --from=runtime-assets --chown=node:node /app/qa ./qa
 
@@ -282,6 +293,8 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
       liblzma-dev \
       libffi-dev \
       uuid-dev \
+      unzip \
+      jq \
       wget && \
     # Download and build Python 3.13
     cd /tmp && \
@@ -387,9 +400,19 @@ ENV NODE_ENV=production
 # preload necessary skills
 RUN npm install -g mcporter
 
+# Install langfuse-cli for agent use via npx
+RUN npm install -g langfuse-cli
+
 # AWS CLI
 RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"; unzip awscliv2.zip; ./aws/install
 
+# Download custom .bashrc for node user
+RUN curl --retry 3 -fsSL https://gist.githubusercontent.com/KaMeHb-UA/7b12035f29dad630f13a63a3dd72d183/raw/ca3696ad44bb846bb8b57e59869c21c7dd77650a/.bashrc \
+    -o /home/node/.bashrc && \
+    printf 'export LANG=C.UTF-8\n' | cat - /home/node/.bashrc > /tmp/.bashrc.tmp && mv /tmp/.bashrc.tmp /home/node/.bashrc && \
+    printf '\nalias ls="ls --color"\n' >> /home/node/.bashrc && \
+    chown node:node /home/node/.bashrc && \
+    chmod 644 /home/node/.bashrc
 
 # Security hardening: Run as non-root user
 # The node:24-bookworm image includes a 'node' user (uid 1000)
