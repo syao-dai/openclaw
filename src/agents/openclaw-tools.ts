@@ -10,6 +10,7 @@ import { selectApplicableRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway } from "../gateway/call.js";
 import { isEmbeddedMode } from "../infra/embedded-mode.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
 import { getActiveRuntimeWebToolsMetadata } from "../secrets/runtime-web-tools-state.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
@@ -70,6 +71,8 @@ import { createUpdatePlanTool } from "./tools/update-plan-tool.js";
 import { createVideoGenerateTool } from "./tools/video-generate-tool.js";
 import { createWebFetchTool, createWebSearchTool } from "./tools/web-tools.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
+
+const log = createSubsystemLogger("agents/openclaw-tools");
 
 type OpenClawToolsDeps = {
   callGateway: typeof callGateway;
@@ -515,26 +518,46 @@ export function createOpenClawTools(
         ]),
     ...(includeSubagentSpawnTool
       ? [
-          createSessionsSpawnTool({
-            agentSessionKey: options?.agentSessionKey,
-            completionOwnerKey: options?.runSessionKey,
-            agentChannel: options?.agentChannel,
-            agentAccountId: options?.agentAccountId,
-            agentTo: options?.agentTo,
-            agentThreadId: options?.agentThreadId,
-            agentGroupId: options?.agentGroupId,
-            agentGroupChannel: options?.agentGroupChannel,
-            agentGroupSpace: options?.agentGroupSpace,
-            agentMemberRoleIds: options?.agentMemberRoleIds,
-            sandboxed: options?.sandboxed,
-            config: resolvedConfig,
-            requesterAgentIdOverride: options?.requesterAgentIdOverride,
-            workspaceDir: spawnWorkspaceDir,
-            inheritedToolAllowlist: options?.inheritedToolAllowlist,
-            inheritedToolDenylist: options?.inheritedToolDenylist,
-          }),
+          (() => {
+            log.info(
+              `[createOpenClawTools] Creating sessions_spawn tool with: sessionKey=${options?.agentSessionKey || "none"}, sandboxed=${options?.sandboxed ?? false}, hasConfig=${!!resolvedConfig}`,
+            );
+            if (resolvedConfig) {
+              log.info(
+                `[createOpenClawTools] Config for sessions_spawn: acp.enabled=${resolvedConfig.acp?.enabled ?? "undefined"}, acp.backend=${resolvedConfig.acp?.backend ?? "undefined"}`,
+              );
+            }
+            const tool = createSessionsSpawnTool({
+              agentSessionKey: options?.agentSessionKey,
+              completionOwnerKey: options?.runSessionKey,
+              agentChannel: options?.agentChannel,
+              agentAccountId: options?.agentAccountId,
+              agentTo: options?.agentTo,
+              agentThreadId: options?.agentThreadId,
+              agentGroupId: options?.agentGroupId,
+              agentGroupChannel: options?.agentGroupChannel,
+              agentGroupSpace: options?.agentGroupSpace,
+              agentMemberRoleIds: options?.agentMemberRoleIds,
+              sandboxed: options?.sandboxed,
+              config: resolvedConfig,
+              requesterAgentIdOverride: options?.requesterAgentIdOverride,
+              workspaceDir: spawnWorkspaceDir,
+              inheritedToolAllowlist: options?.inheritedToolAllowlist,
+              inheritedToolDenylist: options?.inheritedToolDenylist,
+              runId: options?.runId,  // ← Pass Agent A's runId for event streaming
+            });
+            log.info(
+              `[createOpenClawTools] sessions_spawn tool created: displaySummary="${tool.displaySummary}"`,
+            );
+            return tool;
+          })(),
         ]
-      : []),
+      : (() => {
+          log.info(
+            `[createOpenClawTools] Skipping sessions_spawn tool creation (includeSubagentSpawnTool=${includeSubagentSpawnTool}, embedded=${embedded}, allowGatewaySubagentBinding=${options?.allowGatewaySubagentBinding ?? false})`,
+          );
+          return [];
+        })()),
     createSessionsYieldTool({
       sessionId: options?.sessionId,
       onYield: options?.onYield,

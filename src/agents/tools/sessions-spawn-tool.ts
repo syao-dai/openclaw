@@ -13,6 +13,7 @@ import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGateway } from "../../gateway/call.js";
 import { resolveSnakeCaseParamKey } from "../../param-key.js";
+import { emitAgentEvent, onAgentEvent } from "../../infra/agent-events.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.js";
@@ -210,6 +211,15 @@ function createSessionsSpawnToolSchema(params: {
         description: 'Light bootstrap context; runtime="subagent" only.',
       }),
     ),
+    expectsCompletionMessage: Type.Optional(
+      Type.Boolean({
+        description:
+          'If true (default), waits for the spawned agent to complete and returns the result synchronously. ' +
+          'If false, returns immediately with "accepted" status; completion is delivered via announcement. ' +
+          'Use false for fire-and-forget background tasks. ' +
+          'Native subagents only; ACP runtime always returns immediately regardless of this setting.',
+      }),
+    ),
 
     // Inline attachments (snapshot-by-value).
     attachments: Type.Optional(
@@ -271,6 +281,8 @@ export function createSessionsSpawnTool(
     config?: OpenClawConfig;
     /** Explicit agent ID override for cron/hook sessions where session key parsing may not work. */
     requesterAgentIdOverride?: string;
+    /** Agent A's runId (for event streaming). */
+    runId?: string;
   } & SpawnedToolContext,
 ): AnyAgentTool {
   const acpAvailable = isAcpRuntimeSpawnAvailable({
@@ -588,6 +600,239 @@ export function createSessionsSpawnTool(
           `[sessions_spawn] SUBAGENT: SYNCHRONOUS MODE - Now waiting for Agent B (runId=${result.runId}) to complete...`,
         );
         
+        // 🆕 Start listening to Agent B's events and relay text deltas to Agent A
+        const childSessionKey = result.childSessionKey;
+        const parentSessionKey = opts?.agentSessionKey;
+        const childRunId = result.runId;
+        const parentRunId = opts?.runId;  // ← Agent A's runId
+        
+        // Extract agent label from childSessionKey (e.g., "agent:fais-agent:subagent:xxx" → "fais-agent")
+        const childAgentLabel = childSessionKey?.split(":")[1] || "Agent B";
+        
+        log.info(
+          `[sessions_spawn] SUBAGENT STREAMING: Setting up event relay from child (${childSessionKey}) to parent (${parentSessionKey || "none"})`,
+        );
+        log.info(
+          `[sessions_spawn] SUBAGENT STREAMING: Agent A runId=${parentRunId || "none"}, Agent B runId=${childRunId}`,
+        );
+        log.info(
+          `[sessions_spawn] SUBAGENT STREAMING: Child agent label: "${childAgentLabel}"`,
+        );
+        
+        // Track if we've sent the header
+        let headerSent = false;
+        let detailsClosed = false;  // Track if we've closed the collapsible section
+        let progressLineCount = 0;
+        let pendingText = "";  // Accumulate text until we have a complete line
+        let lastEventWasToolCall = false;
+        let accumulatedReportText = "";  // Accumulate all report text for final result
+        
+        // Helper function to remove markdown heading symbols from text
+        const removeMarkdownHeadings = (text: string): string => {
+          // Remove markdown heading symbols (# ## ### etc.) from each line
+          // Split by newlines, remove # from start of each line, then rejoin
+          return text
+            .split('\n')
+            .map(line => line.replace(/^#+\s*/, ''))
+            .join('\n');
+        };
+        
+        // Helper function to detect if text looks like a report
+        const looksLikeReport = (text: string): boolean => {
+          const trimmed = text.trim();
+          // Detect markdown headings (# at start of line or after ---)
+          // if (/^#+\s/.test(trimmed)) {
+          //   return true;
+          // }
+          // Detect 🦉 emoji (indicates structured report output)
+          if (/🦉/.test(trimmed)) {
+            return true;
+          }
+          // Check if text contains --- followed by markdown heading
+          if (/---\s*#+\s/.test(trimmed)) {
+            return true;
+          }
+          // Detect Chinese report keywords at start or after ---
+          if (/^(#+)?\s*(報告|分析報告|財務報告|財務分析|分析結果|執行結果)/.test(trimmed)) {
+            return true;
+          }
+          // Check for report keywords after ---
+          if (/---[\s\S]*?(報告|分析報告|財務報告)/.test(trimmed)) {
+            return true;
+          }
+          // Detect phrases that indicate report generation
+          if (/(產出|生成|撰寫|編寫)[^\n]*(報告|分析)/.test(trimmed)) {
+            return true;
+          }
+          return false;
+        };
+        
+        // Subscribe to Agent B's events
+        const unsubscribe = onAgentEvent((evt) => {
+          // Only process events from the child session
+          if (evt.sessionKey !== childSessionKey) {
+            return;
+          }
+          // Track tool calls to know when to emit accumulated text
+          if (evt.stream === "tool") {
+            // Tool call started - flush any pending text
+            if (pendingText.trim().length > 0 && parentRunId && parentSessionKey) {
+              // Remove markdown headings from accumulated text to avoid rendering as title in Open WebUI
+              const cleanedText = removeMarkdownHeadings(pendingText.trim());
+              const formattedText = `> 📌 ${cleanedText}\n\n`;
+              progressLineCount++;
+              
+              log.info(
+                `[sessions_spawn] SUBAGENT STREAMING: Flushing accumulated text (${pendingText.length} chars) before tool call`,
+              );
+              
+              emitAgentEvent({
+                runId: parentRunId,
+                sessionKey: parentSessionKey,
+                stream: "assistant",
+                data: {
+                  text: formattedText,
+                  delta: formattedText,
+                },
+              });
+              pendingText = "";
+            }
+            lastEventWasToolCall = true;
+            return;
+          }
+        
+
+          // Only relay 'assistant' stream with text content
+          if (evt.stream === "assistant" && evt.data) {
+            const delta = evt.data.delta;
+            
+            // Check if this is a text delta (not tool calls, media, etc.)
+            if (typeof delta === "string" && delta.length > 0 && parentRunId && parentSessionKey) {
+              log.info(
+                 `[sessions_spawn] SUBAGENT STREAMING: Received text delta (${delta.length} chars), lastWasToolCall=${lastEventWasToolCall}`,
+              );
+              
+              // Send collapsible header on first output
+              if (!headerSent) {
+                headerSent = true;
+                emitAgentEvent({
+                  runId: parentRunId,
+                  sessionKey: parentSessionKey,
+                  stream: "assistant",
+                  data: {
+                    text: `\n\n<details open>\n<summary>🔄 ${childAgentLabel} 執行中... (點擊摺疊/展開)</summary>\n\n> 📋 **Session**: \`${childSessionKey}\`\n\n`,
+                    delta: `\n\n<details open>\n<summary>🔄 ${childAgentLabel} 執行中... (點擊摺疊/展開)</summary>\n\n> 📋 **Session**: \`${childSessionKey}\`\n\n`,
+                  },
+                });
+              }
+              
+              // If this is the first text after a tool call, flush pending and start new line
+              if (lastEventWasToolCall && pendingText.trim().length > 0) {
+                // Check if pending text looks like a report
+                if (!detailsClosed && looksLikeReport(pendingText)) {
+                  log.info(
+                    `[sessions_spawn] SUBAGENT STREAMING: Detected report start, closing details`,
+                  );
+                  // Close details section
+                  emitAgentEvent({
+                    runId: parentRunId,
+                    sessionKey: parentSessionKey,
+                    stream: "assistant",
+                    data: {
+                      text: `\n</details>\n\n---\n\n✅ ${childAgentLabel} 執行完成，開始生成報告 (${progressLineCount} 條進度更新)\n\n`,
+                      delta: `\n</details>\n\n---\n\n✅ ${childAgentLabel} 執行完成，開始生成報告 (${progressLineCount} 條進度更新)\n\n`,
+                    },
+                  });
+                  detailsClosed = true;
+                  // Emit report text directly without blockquote
+                  emitAgentEvent({
+                    runId: parentRunId,
+                    sessionKey: parentSessionKey,
+                    stream: "assistant",
+                    data: {
+                      text: pendingText.trim(),
+                      delta: pendingText.trim(),
+                    },
+                  });
+                  pendingText = delta;  // Start new accumulation
+                } else {
+                  // Remove markdown headings from accumulated text to avoid rendering as title in Open WebUI
+                  const cleanedText = removeMarkdownHeadings(pendingText.trim());
+                  const formattedText = `> 📌 ${cleanedText}\n\n`;
+                  progressLineCount++;
+                  log.info(
+                    `[sessions_spawn] SUBAGENT STREAMING: Flushing accumulated text (${pendingText.length} chars) after tool call`,
+                  );
+                  
+                  emitAgentEvent({
+                    runId: parentRunId,
+                    sessionKey: parentSessionKey,
+                    stream: "assistant",
+                    data: {
+                      text: formattedText,
+                      delta: formattedText,
+                    },
+                  });
+                  pendingText = delta;  // Start new accumulation
+                }
+                lastEventWasToolCall = false;
+              } else {
+                // Accumulate text
+                pendingText += delta;
+                
+                // Check if accumulated text looks like a report and we haven't closed details yet
+                if (!detailsClosed && headerSent && looksLikeReport(pendingText)) {
+                  log.info(
+                    `[sessions_spawn] SUBAGENT STREAMING: Detected report start in accumulated text, closing details and starting streaming`,
+                  );
+                  // Close details section
+                  emitAgentEvent({
+                    runId: parentRunId,
+                    sessionKey: parentSessionKey,
+                    stream: "assistant",
+                    data: {
+                      text: `\n</details>\n\n---\n\n**✅ ${childAgentLabel} 執行完成，開始生成報告** (${progressLineCount} 條進度更新)\n\n`,
+                      delta: `\n</details>\n\n---\n\n**✅ ${childAgentLabel} 執行完成，開始生成報告** (${progressLineCount} 條進度更新)\n\n`,
+                    },
+                  });
+                  detailsClosed = true;
+                  // Flush accumulated text and start streaming
+                  emitAgentEvent({
+                    runId: parentRunId,
+                    sessionKey: parentSessionKey,
+                    stream: "assistant",
+                    data: {
+                      text: pendingText,
+                      delta: pendingText,
+                    },
+                  });
+                  accumulatedReportText += pendingText;  // Save to accumulated result
+                  pendingText = "";  // Clear buffer - now in streaming mode
+                }
+                lastEventWasToolCall = false;
+                
+                // If details already closed (report mode), stream immediately
+                if (detailsClosed && pendingText.length > 0) {
+                  log.info(
+                    `[sessions_spawn] SUBAGENT STREAMING: Streaming report text (${pendingText.length} chars)`,
+                  );
+                  emitAgentEvent({
+                    runId: parentRunId,
+                    sessionKey: parentSessionKey,
+                    stream: "assistant",
+                    data: {
+                      text: pendingText,
+                      delta: pendingText,
+                    },
+                  });
+                  accumulatedReportText += pendingText;  // Save to accumulated result
+                  pendingText = "";  // Clear after streaming
+                }
+              }
+            }
+          }
+        });
+        
         // Resolve the actual runTimeoutSeconds from config if not explicitly set
         const cfg = getRuntimeConfig();
         const resolvedRunTimeoutSeconds = resolveConfiguredSubagentRunTimeoutSeconds({
@@ -632,10 +877,75 @@ export function createSessionsSpawnTool(
             
             const totalElapsedMs = Date.now() - startTime;
             
+            // 🆕 Clean up event listener
+            log.info(
+              `[sessions_spawn] SUBAGENT STREAMING: Cleaning up event listener after Agent B completion`,
+            );
+            log.info(
+              `[sessions_spawn] SUBAGENT STREAMING: Relayed ${progressLineCount} progress updates`,
+            );
+            unsubscribe();
+            // Send any remaining pending text
+            if (pendingText.trim().length > 0 && headerSent && parentRunId && parentSessionKey) {
+              if (detailsClosed) {
+                // If details already closed, send as plain text
+                emitAgentEvent({
+                  runId: parentRunId,
+                  sessionKey: parentSessionKey,
+                  stream: "assistant",
+                  data: {
+                    text: pendingText.trim(),
+                    delta: pendingText.trim(),
+                  },
+                });
+                accumulatedReportText += pendingText.trim();  // Save final text
+              } else {
+                // Otherwise send as progress line
+                const formattedDelta = `> 📌 ${pendingText.trim()}\n\n`;
+                progressLineCount++;
+                emitAgentEvent({
+                  runId: parentRunId,
+                  sessionKey: parentSessionKey,
+                  stream: "assistant",
+                  data: {
+                    text: formattedDelta,
+                    delta: formattedDelta,
+                  },
+                });
+              }
+              log.info(
+                `[sessions_spawn] SUBAGENT STREAMING: Sent final pending text (${pendingText.length} chars)`,
+              );
+            }
+            
+            // Close the collapsible section if we opened it and haven't closed it yet
+            if (headerSent && !detailsClosed && parentRunId && parentSessionKey) {
+              emitAgentEvent({
+                runId: parentRunId,
+                sessionKey: parentSessionKey,
+                stream: "assistant",
+                data: {
+                  text: `\n</details>\n\n---\n\n**✅ ${childAgentLabel} 任務完成** (${progressLineCount} 條進度更新)\n\n`,
+                  delta: `\n</details>\n\n---\n\n**✅ ${childAgentLabel} 任務完成** (${progressLineCount} 條進度更新)\n\n`,
+                },
+              });
+            }
+            
             if (agentBResult) {
               log.info(
-                `[sessions_spawn] SUBAGENT: SUCCESS - Got Agent B result (${agentBResult.length} chars) after total ${totalElapsedMs}ms`,
+                `[sessions_spawn] SUBAGENT: SUCCESS - Got Agent B result from transcript (${agentBResult.length} chars) after total ${totalElapsedMs}ms`,
               );
+              
+              // Use accumulated streaming text if available and longer than transcript result
+              const finalResult = accumulatedReportText.length > agentBResult.length 
+                ? accumulatedReportText 
+                : agentBResult;
+              
+              if (accumulatedReportText.length > agentBResult.length) {
+                log.info(
+                  `[sessions_spawn] SUBAGENT: Using accumulated streaming text (${accumulatedReportText.length} chars) instead of transcript result (${agentBResult.length} chars)`,
+                );
+              }
               
               // Return the actual result from Agent B
               return jsonResult({
@@ -643,7 +953,7 @@ export function createSessionsSpawnTool(
                 childSessionKey: result.childSessionKey,
                 runId: result.runId,
                 mode: result.mode,
-                result: agentBResult,
+                result: finalResult,
                 runtime: {
                   spawnMs: spawnElapsedMs,
                   waitMs: waitElapsedMs,
@@ -660,6 +970,8 @@ export function createSessionsSpawnTool(
             log.warn(
               `[sessions_spawn] SUBAGENT: Wait TIMEOUT after ${waitElapsedMs}ms. Returning accepted status with timeout note.`,
             );
+            // 🆕 Clean up event listener on timeout
+            unsubscribe();
             return jsonResult({
               ...result,
               note: `Subagent started but timed out after ${Math.round(waitElapsedMs / 1000)}s. Check /subagents list for status. Original note: ${result.note || ""}`,
@@ -668,6 +980,8 @@ export function createSessionsSpawnTool(
             log.warn(
               `[sessions_spawn] SUBAGENT: Wait ERROR status=${waitResult.status}, error=${waitResult.error}. Returning accepted status.`,
             );
+            // 🆕 Clean up event listener on error
+            unsubscribe();
             return jsonResult({
               ...result,
               note: `Subagent started but wait failed (${waitResult.status}). Check /subagents list for status. Original note: ${result.note || ""}`,
@@ -678,6 +992,8 @@ export function createSessionsSpawnTool(
           log.error(
             `[sessions_spawn] SUBAGENT: Wait exception after ${waitErrorMs}ms: ${err instanceof Error ? err.message : String(err)}`,
           );
+          // 🆕 Clean up event listener on exception
+          unsubscribe();
           // Fall through to return accepted status
         }
       } else if (expectsCompletionMessage) {

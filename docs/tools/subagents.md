@@ -224,6 +224,16 @@ Per-agent overrides use `agents.list[].subagents.delegationMode`.
 <ParamField path="context" type='"isolated" | "fork"' default="isolated">
   `fork` branches the requester's current transcript into the child session. Native sub-agents only. Thread-bound spawns default to `fork`; non-thread spawns default to `isolated`.
 </ParamField>
+<ParamField path="expectsCompletionMessage" type="boolean" default="true">
+  If `true` (default), waits for the spawned agent to complete and returns the result synchronously.
+  If `false`, returns immediately with `"accepted"` status; completion is delivered via announcement.
+  Use `false` for fire-and-forget background tasks where you don't need the immediate result.
+  Native subagents only; ACP runtime (`runtime: "acp"`) always returns immediately regardless of this setting.
+  
+  **Example use cases:**
+  - `true` (default): Task requires child result before continuing (e.g., "analyze this file and use the results")
+  - `false`: Fire-and-forget background work (e.g., "start monitoring logs"); use with `sessions_yield()` to receive completion announcement later
+</ParamField>
 
 <Warning>
 `sessions_spawn` does **not** accept channel-delivery params (`target`,
