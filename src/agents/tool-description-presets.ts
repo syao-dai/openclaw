@@ -46,6 +46,7 @@ export function describeSessionsSpawnTool(options?: {
       : '`mode="run"` one-shot background work.',
     "Subagents inherit parent workspace.",
     "Native subagents get task in first visible `[Subagent Task]` message.",
+    '`expectsCompletionMessage=true` (default) waits for result; `false` returns immediately and delivers via announcement.',
     'Native only: `context="fork"` only when child needs current transcript; else omit or `isolated`.',
     "Use for fresh child-session work.",
   ];
@@ -53,9 +54,9 @@ export function describeSessionsSpawnTool(options?: {
     return baseDescription.join(" ");
   }
   return [
-    ...baseDescription.slice(0, 3),
+    ...baseDescription.slice(0, 4),
     '`runtime="acp"` for ACP harness ids: codex, claude, gemini, opencode, or agent ACP runtime config.',
-    ...baseDescription.slice(3),
+    ...baseDescription.slice(4),
   ].join(" ");
 }
 
