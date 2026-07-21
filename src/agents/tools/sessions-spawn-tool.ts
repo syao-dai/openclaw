@@ -653,17 +653,17 @@ export function createSessionsSpawnTool(
             return true;
           }
           // Detect Chinese report keywords at start or after ---
-          if (/^(#+)?\s*(報告|分析報告|財務報告|財務分析|分析結果|執行結果)/.test(trimmed)) {
-            return true;
-          }
+          // if (/^(#+)?\s*(報告|分析報告|財務報告|財務分析|分析結果|執行結果)/.test(trimmed)) {
+          //   return true;
+          // }
           // Check for report keywords after ---
-          if (/---[\s\S]*?(報告|分析報告|財務報告)/.test(trimmed)) {
-            return true;
-          }
+          // if (/---[\s\S]*?(報告|分析報告|財務報告)/.test(trimmed)) {
+          //   return true;
+          // }
           // Detect phrases that indicate report generation
-          if (/(產出|生成|撰寫|編寫)[^\n]*(報告|分析)/.test(trimmed)) {
-            return true;
-          }
+          // if (/(產出|生成|撰寫|編寫)[^\n]*(報告|分析)/.test(trimmed)) {
+          //   return true;
+          // }
           return false;
         };
         
@@ -833,15 +833,15 @@ export function createSessionsSpawnTool(
           }
         });
         
-        // Resolve the actual runTimeoutSeconds from config if not explicitly set
+        // sessions_spawn rejects a per-call runTimeoutSeconds override (see
+        // UNSUPPORTED_SESSIONS_SPAWN_TIMEOUT_PARAM_KEYS above), so only the config default applies here.
         const cfg = getRuntimeConfig();
         const resolvedRunTimeoutSeconds = resolveConfiguredSubagentRunTimeoutSeconds({
           cfg,
-          runTimeoutSeconds,
         });
-        
+
         log.info(
-          `[sessions_spawn] SUBAGENT: Resolved runTimeoutSeconds=${resolvedRunTimeoutSeconds} (from tool param: ${runTimeoutSeconds ?? "none"}, from config: ${cfg?.agents?.defaults?.subagents?.runTimeoutSeconds ?? "none"})`,
+          `[sessions_spawn] SUBAGENT: Resolved runTimeoutSeconds=${resolvedRunTimeoutSeconds} (from config: ${cfg?.agents?.defaults?.subagents?.runTimeoutSeconds ?? "none"})`,
         );
         
         const waitTimeoutMs = (resolvedRunTimeoutSeconds || 300) * 1000 + 10000; // timeout + 10s buffer
