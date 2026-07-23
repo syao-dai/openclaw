@@ -20,6 +20,7 @@
     "extensions": [
       "./index.ts"
     ],
+    "hooks": {},
     "install": {
       "npmSpec": "@openclaw/acpx",
       "defaultChoice": "npm",

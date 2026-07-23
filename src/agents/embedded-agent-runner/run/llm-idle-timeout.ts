@@ -1,4 +1,4 @@
-import { onLlmRequestActivity } from "@openclaw/ai/internal/runtime";
+import { notifyLlmRequestActivity, onLlmRequestActivity } from "@openclaw/ai/internal/runtime";
 /**
  * Wraps LLM streams with idle-timeout detection and diagnostics.
  */
@@ -407,8 +407,17 @@ export function streamWithIdleTimeout(
     } else {
       sourceSignal?.addEventListener("abort", abortFromSourceSignal, { once: true });
     }
+    // Providers that defer their events (e.g. Claude streaming-refusal buffering)
+    // report liveness only on this wrapper's signal. Relay it to the caller's
+    // signal so outer observers, like the stuck-session watchdog, see it too.
+    const unsubscribeActivityRelay = sourceSignal
+      ? onLlmRequestActivity(streamAbortController.signal, () =>
+          notifyLlmRequestActivity(sourceSignal),
+        )
+      : undefined;
     const cleanupSourceSignal = () => {
       sourceSignal?.removeEventListener("abort", abortFromSourceSignal);
+      unsubscribeActivityRelay?.();
     };
     const wrappedOptions = {
       ...options,

@@ -1,3 +1,4 @@
+import { onLlmRequestActivity } from "@openclaw/ai/internal/runtime";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 /**
  * Emits diagnostic model-call events around embedded-agent stream functions.
@@ -37,6 +38,7 @@ import type {
 } from "../../../plugins/hook-types.js";
 import type { StreamFn } from "../../runtime/index.js";
 import { derivePromptTokens, normalizeUsage, type UsageLike } from "../../usage.js";
+import { log } from "../logger.js";
 
 type ModelCallDiagnosticContext = {
   runId: string;
@@ -93,6 +95,11 @@ type ModelCallObservationState = {
   usage?: ModelCallUsage;
   contentCapture?: DiagnosticModelContentCapturePolicy;
   lastStreamProgressAt?: number;
+  /** Chunks yielded to the stream consumer. */
+  streamChunkCount: number;
+  /** Provider activity notifications, including events the provider defers until stop. */
+  streamActivityCount: number;
+  unsubscribeActivity?: () => void;
   terminalEventEmitted?: boolean;
 };
 
@@ -298,6 +305,7 @@ function observeResponseChunk(
   chunk: unknown,
 ): void {
   state.timeToFirstByteMs ??= Math.max(0, Date.now() - startedAt);
+  state.streamChunkCount += 1;
   observeOutputMessageContent(state, chunk);
   const bytes = responseStreamChunkByteLength(chunk);
   if (bytes !== undefined) {
@@ -336,6 +344,21 @@ function maybeEmitModelCallStreamProgress(
     type: "run.progress",
     ...progressFields,
   });
+}
+
+function finishModelCallStreamObservation(
+  eventBase: ModelCallEventBase,
+  durationMs: number,
+  outcome: "completed" | "error",
+  state: ModelCallObservationState,
+): void {
+  state.unsubscribeActivity?.();
+  state.unsubscribeActivity = undefined;
+  log.debug(
+    `model call stream summary: runId=${eventBase.runId} callId=${eventBase.callId} ` +
+      `outcome=${outcome} durationMs=${durationMs} deltas=${state.streamChunkCount} ` +
+      `activityEvents=${state.streamActivityCount} responseBytes=${state.responseStreamBytes}`,
+  );
 }
 
 function modelCallSizeTimingFields(state: ModelCallObservationState): ModelCallSizeTimingFields {
@@ -571,6 +594,7 @@ function emitModelCallCompleted(
   }
   state.terminalEventEmitted = true;
   const durationMs = Date.now() - startedAt;
+  finishModelCallStreamObservation(eventBase, durationMs, "completed", state);
   const sizeTimingFields = modelCallSizeTimingFields(state);
   emitProviderRequestTimelineEvent(eventBase, startedAt, durationMs, true);
   emitTrustedDiagnosticEventWithPrivateData(
@@ -601,6 +625,7 @@ function emitModelCallError(
   }
   state.terminalEventEmitted = true;
   const durationMs = Date.now() - startedAt;
+  finishModelCallStreamObservation(eventBase, durationMs, "error", state);
   const sizeTimingFields = modelCallSizeTimingFields(state);
   emitProviderRequestTimelineEvent(eventBase, startedAt, durationMs, false);
   emitTrustedDiagnosticEventWithPrivateData(
@@ -864,9 +889,20 @@ export function wrapStreamFnWithDiagnosticModelCallEvents(
     const startedAt = Date.now();
     const state: ModelCallObservationState = {
       responseStreamBytes: 0,
+      streamChunkCount: 0,
+      streamActivityCount: 0,
       modelContent,
       contentCapture: ctx.contentCapture,
     };
+    // Some providers (e.g. Claude streaming-refusal buffering) hold every event
+    // until stop, so the iterator sees nothing for the whole generation. Their
+    // activity notifications are the only liveness signal for the watchdog.
+    if (options?.signal) {
+      state.unsubscribeActivity = onLlmRequestActivity(options.signal, () => {
+        state.streamActivityCount += 1;
+        maybeEmitModelCallStreamProgress(eventBase, state);
+      });
+    }
     const propagatedOptions = withDiagnosticTraceparentHeader(options, trace, state);
 
     try {

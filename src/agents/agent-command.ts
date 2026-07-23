@@ -728,6 +728,13 @@ async function prepareAgentCommandExecution(opts: AgentCommandOpts, runtime: Run
     : isSubagentLane
       ? 0
       : undefined;
+  // Log timeout parsing for debugging
+  console.log(
+    `[agent-command] Timeout parsing: ` +
+    `opts.timeout=${opts.timeout ?? "undefined"} (type=${typeof opts.timeout}), ` +
+    `isSubagentLane=${isSubagentLane}, ` +
+    `parsed timeoutSecondsRaw=${timeoutSecondsRaw ?? "undefined"}`
+  );
   if (
     timeoutSecondsRaw !== undefined &&
     (Number.isNaN(timeoutSecondsRaw) || timeoutSecondsRaw < 0)
@@ -739,6 +746,12 @@ async function prepareAgentCommandExecution(opts: AgentCommandOpts, runtime: Run
     overrideSeconds: timeoutSecondsRaw,
   });
   const runTimeoutOverrideMs = hasExplicitTimeoutOption ? timeoutMs : undefined;
+  // Log final resolved timeout
+  console.log(
+    `[agent-command] Final timeout: ` +
+    `overrideSeconds=${timeoutSecondsRaw ?? "undefined"}, ` +
+    `resolved timeoutMs=${timeoutMs}`
+  );
 
   const selectedCommandOpts = toSessionKey
     ? { ...opts, to: undefined, sessionKey: explicitSessionKey }

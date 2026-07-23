@@ -55,6 +55,8 @@ export const FIELD_HELP: Record<string, string> = {
     'Primary log level threshold for runtime logger output: "silent", "fatal", "error", "warn", "info", "debug", or "trace". Keep "info" or "warn" for production, and use debug/trace only during investigation.',
   "logging.file":
     "Optional file path for persisted log output in addition to or instead of console logging. Use a managed writable path and align retention/rotation with your operational policy.",
+  "logging.retentionDays":
+    "Number of days to keep dated rolling log files (openclaw-YYYY-MM-DD.log) before they are pruned. Default: 1 day. Raise this to retain older logs for longer investigations; only applies to the dated rolling filename pattern, not a custom logging.file path.",
   "logging.consoleLevel":
     'Console-specific log threshold: "silent", "fatal", "error", "warn", "info", "debug", or "trace" for terminal output control. Use this to keep local console quieter while retaining richer file logging if needed.',
   "logging.consoleStyle":

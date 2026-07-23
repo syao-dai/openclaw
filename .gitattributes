@@ -4,3 +4,14 @@ src/gateway/server-methods/CLAUDE.md -text
 ui/src/i18n/.i18n/* linguist-generated
 ui/src/i18n/locales/*.ts linguist-generated
 ui/src/i18n/locales/en.ts -linguist-generated
+
+# White-box source-code export (scripts/export-whitebox-src.sh):
+# native mobile/desktop client apps are not part of the deployed web/docker
+# image (see .dockerignore, which excludes all of apps/ for the same reason)
+# and are dropped from the delivered archive. apps/shared/ stays in — it
+# feeds the Canvas A2UI bundle that ships inside the runtime image.
+apps/android/** export-ignore
+apps/ios/** export-ignore
+apps/macos/** export-ignore
+apps/macos-mlx-tts/** export-ignore
+apps/swabble/** export-ignore

@@ -302,6 +302,45 @@ function writeAssistantContentChunk(
   });
 }
 
+// Signals that the model is reasoning without forwarding the actual chain-of-thought:
+// open-webui's middleware already renders any non-empty `reasoning_content` delta as a
+// collapsible "reasoning" block, so a static placeholder surfaces a thinking indicator
+// while the real thinking text (evt.data.text/delta) is deliberately never sent here.
+const REASONING_PLACEHOLDER_TEXT = "Thinking…";
+// Heartbeat cadence for the "." kept-alive drip appended while a thinking phase is
+// still open, so a long reasoning stretch keeps visibly ticking without leaking text.
+const REASONING_HEARTBEAT_INTERVAL_MS = 30_000;
+
+// Tool execution reuses the same reasoning_content bubble/heartbeat as thinking.
+// There is no safe OpenAI-compatible signal for "the server already ran and
+// finished a tool call this turn": any non-empty `delta.tool_calls` gets
+// accumulated by open-webui's middleware and queued for open-webui itself to
+// execute once the stream ends, regardless of finish_reason. reasoning_content
+// has no such side effect, so a tool-start item event just relabels the same
+// placeholder/heartbeat instead of opening a second channel.
+function buildToolActivityPlaceholderText(title: unknown): string {
+  return typeof title === "string" && title ? `Running: ${title}` : "Working…";
+}
+
+function writeAssistantReasoningChunk(
+  res: ServerResponse,
+  params: { runId: string; model: string; content: string },
+) {
+  writeSse(res, {
+    id: params.runId,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: params.model,
+    choices: [
+      {
+        index: 0,
+        delta: { reasoning_content: params.content },
+        finish_reason: null,
+      },
+    ],
+  });
+}
+
 function writeAssistantFinishChunk(
   res: ServerResponse,
   params: { runId: string; model: string; finishReason: "stop" | "tool_calls" },
@@ -1183,6 +1222,8 @@ export async function handleOpenAiHttpRequest(
   let wroteRole = false;
   let wroteStopChunk = false;
   let sawAssistantDelta = false;
+  let wroteReasoningPlaceholder = false;
+  let reasoningHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let bufferedAssistantContent = "";
   let bufferedReplaceableAssistantContent = "";
   let finalUsage: OpenAiChatCompletionsUsage | undefined;
@@ -1191,6 +1232,26 @@ export async function handleOpenAiHttpRequest(
   let resultResolved = false;
   let closed = false;
   let stopWatchingDisconnect = () => {};
+
+  const stopReasoningHeartbeat = () => {
+    if (reasoningHeartbeatTimer) {
+      clearInterval(reasoningHeartbeatTimer);
+      reasoningHeartbeatTimer = null;
+    }
+  };
+
+  const startReasoningHeartbeat = () => {
+    if (reasoningHeartbeatTimer || closed) {
+      return;
+    }
+    reasoningHeartbeatTimer = setInterval(() => {
+      if (closed) {
+        stopReasoningHeartbeat();
+        return;
+      }
+      writeAssistantReasoningChunk(res, { runId, model, content: "." });
+    }, REASONING_HEARTBEAT_INTERVAL_MS);
+  };
 
   const maybeFinalize = () => {
     if (closed || !finalizeRequested) {
@@ -1203,6 +1264,7 @@ export async function handleOpenAiHttpRequest(
       return;
     }
     closed = true;
+    stopReasoningHeartbeat();
     stopWatchingDisconnect();
     unsubscribe();
     if (!wroteStopChunk) {
@@ -1264,12 +1326,47 @@ export async function handleOpenAiHttpRequest(
       }
 
       sawAssistantDelta = true;
+      // Reasoning can resume after prose (e.g. between tool calls in the same
+      // run) — re-arm the placeholder so a later thinking phase is signaled too.
+      wroteReasoningPlaceholder = false;
+      stopReasoningHeartbeat();
       writeAssistantContentChunk(res, {
         runId,
         model,
         content,
         finishReason: null,
       });
+      return;
+    }
+
+    if (evt.stream === "thinking") {
+      if (!wroteReasoningPlaceholder) {
+        wroteReasoningPlaceholder = true;
+        writeAssistantReasoningChunk(res, {
+          runId,
+          model,
+          content: REASONING_PLACEHOLDER_TEXT,
+        });
+      }
+      startReasoningHeartbeat();
+      return;
+    }
+
+    if (evt.stream === "item") {
+      // Only the first item in an otherwise-quiet stretch writes a placeholder;
+      // later tool calls in the same stretch just keep the existing bubble's
+      // heartbeat alive instead of relabeling it (kept intentionally simple —
+      // one continuous "still working" indicator per stretch, not one bubble
+      // per tool call).
+      if (!wroteReasoningPlaceholder && evt.data?.phase === "start") {
+        wroteReasoningPlaceholder = true;
+        writeAssistantReasoningChunk(res, {
+          runId,
+          model,
+          content: buildToolActivityPlaceholderText(evt.data?.title),
+        });
+      }
+      startReasoningHeartbeat();
       return;
     }
 
@@ -1283,6 +1380,7 @@ export async function handleOpenAiHttpRequest(
 
   stopWatchingDisconnect = watchClientDisconnect(req, res, abortController, () => {
     closed = true;
+    stopReasoningHeartbeat();
     unsubscribe();
   });
 
@@ -1313,6 +1411,7 @@ export async function handleOpenAiHttpRequest(
         })
       ) {
         closed = true;
+        stopReasoningHeartbeat();
         stopWatchingDisconnect();
         unsubscribe();
         writeSse(res, {
@@ -1384,6 +1483,7 @@ export async function handleOpenAiHttpRequest(
       logWarn(`openai-compat: streaming chat completion failed: ${String(err)}`);
       if (isClientToolNameConflictError(err)) {
         closed = true;
+        stopReasoningHeartbeat();
         stopWatchingDisconnect();
         unsubscribe();
         writeSse(res, {
@@ -1396,6 +1496,7 @@ export async function handleOpenAiHttpRequest(
       const mapped = resolveOpenAiCompatError(err);
       if (mapped) {
         closed = true;
+        stopReasoningHeartbeat();
         stopWatchingDisconnect();
         unsubscribe();
         writeSse(res, { error: mapped.error });

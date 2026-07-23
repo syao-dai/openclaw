@@ -26,6 +26,16 @@ ARG OPENCLAW_BUN_IMAGE="docker.io/oven/bun:1.3.13@sha256:87416c977a612a204eb54ab
 # docker.io/library/node:24-bookworm-slim (or podman) and replace the digests below with the
 # current multi-arch manifest list entries.
 
+# ── Stage 0: Fetch langfuse skill from upstream repo ───────────
+# Uses sparse checkout to pull only skills/langfuse, keeping the layer small.
+FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS langfuse-skill
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git && \
+    git clone --depth 1 --filter=blob:none --sparse \
+      https://github.com/langfuse/skills.git /tmp/langfuse-skills && \
+    cd /tmp/langfuse-skills && \
+    git sparse-checkout set skills/langfuse
+
 FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS workspace-deps
 ARG OPENCLAW_EXTENSIONS
 ARG OPENCLAW_BUNDLED_PLUGIN_DIR
@@ -76,7 +86,11 @@ COPY --from=workspace-deps /out/${OPENCLAW_BUNDLED_PLUGIN_DIR}/ ./${OPENCLAW_BUN
 # Reduce OOM risk on low-memory hosts during dependency installation.
 # Docker builds on small VMs may otherwise fail with "Killed" (exit 137).
 RUN --mount=type=cache,id=openclaw-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
+    pnpm config set network-concurrency 3 && \
     NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile \
+      --config.fetchRetries=5 \
+      --config.fetchRetryMintimeout=10000 \
+      --config.fetchRetryMaxtimeout=60000 \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
       --config.supportedArchitectures.libc=glibc
@@ -213,6 +227,7 @@ COPY --from=runtime-assets --chown=node:node /app/openclaw.mjs .
 COPY --from=runtime-assets --chown=node:node /app/src/agents/templates ./src/agents/templates
 COPY --from=runtime-assets --chown=node:node /app/${OPENCLAW_BUNDLED_PLUGIN_DIR} ./${OPENCLAW_BUNDLED_PLUGIN_DIR}
 COPY --from=runtime-assets --chown=node:node /app/skills ./skills
+COPY --from=langfuse-skill --chown=node:node /tmp/langfuse-skills/skills/langfuse ./skills/langfuse
 COPY --from=runtime-assets --chown=node:node /app/docs ./docs
 COPY --from=runtime-assets --chown=node:node /app/qa ./qa
 
@@ -275,6 +290,71 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
       chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"; \
     fi
 
+# Install Python 3.13 and uv package manager.
+# Python 3.13 is built from source for maximum compatibility.
+# uv is a fast Python package installer and resolver.
+RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential \
+      libssl-dev \
+      zlib1g-dev \
+      libncurses5-dev \
+      libncursesw5-dev \
+      libreadline-dev \
+      libsqlite3-dev \
+      libgdbm-dev \
+      libdb5.3-dev \
+      libbz2-dev \
+      libexpat1-dev \
+      liblzma-dev \
+      libffi-dev \
+      uuid-dev \
+      unzip \
+      jq \
+      wget && \
+    # Download and build Python 3.13
+    cd /tmp && \
+    wget -q https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tar.xz && \
+    tar -xf Python-3.13.1.tar.xz && \
+    cd Python-3.13.1 && \
+    ./configure --enable-optimizations --with-ensurepip=install && \
+    make -j$(nproc) && \
+    make altinstall && \
+    cd / && \
+    rm -rf /tmp/Python-3.13.1* && \
+    # Create python3 symlink to python3.13
+    update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.13 1 && \
+    update-alternatives --install /usr/bin/pip3 pip3 /usr/local/bin/pip3.13 1 && \
+    # Install uv package manager
+    curl --retry 5 --retry-all-errors --retry-delay 2 -LsSf https://astral.sh/uv/install.sh | sh && \
+    # Move uv to system-wide location
+    mv /root/.local/bin/uv /usr/local/bin/uv && \
+    mv /root/.local/bin/uvx /usr/local/bin/uvx && \
+    # Verify installations before cleanup
+    python3 --version && \
+    uv --version && \
+    # Clean up build dependencies to reduce image size
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y \
+      build-essential \
+      libssl-dev \
+      zlib1g-dev \
+      libncurses5-dev \
+      libncursesw5-dev \
+      libreadline-dev \
+      libsqlite3-dev \
+      libgdbm-dev \
+      libdb5.3-dev \
+      libbz2-dev \
+      libexpat1-dev \
+      liblzma-dev \
+      libffi-dev \
+      uuid-dev \
+      wget && \
+    apt-get autoremove -y
+
+
 # Optionally install Docker CLI for sandbox container management.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1 ...
 # Adds ~50MB. Only the CLI is installed — no Docker daemon.
@@ -334,6 +414,23 @@ RUN install -d -m 0755 -o node -g node /home/node/.config && \
     stat -c '%U:%G %a' /home/node/.config/openclaw | grep -qx 'node:node 700'
 
 ENV NODE_ENV=production
+
+# preload necessary skills
+RUN npm install -g mcporter
+
+# Install langfuse-cli for agent use via npx
+RUN npm install -g langfuse-cli
+
+# AWS CLI
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"; unzip awscliv2.zip; ./aws/install
+
+# Download custom .bashrc for node user
+RUN curl --retry 3 -fsSL https://gist.githubusercontent.com/KaMeHb-UA/7b12035f29dad630f13a63a3dd72d183/raw/ca3696ad44bb846bb8b57e59869c21c7dd77650a/.bashrc \
+    -o /home/node/.bashrc && \
+    printf 'export LANG=C.UTF-8\n' | cat - /home/node/.bashrc > /tmp/.bashrc.tmp && mv /tmp/.bashrc.tmp /home/node/.bashrc && \
+    printf '\nalias ls="ls --color"\n' >> /home/node/.bashrc && \
+    chown node:node /home/node/.bashrc && \
+    chmod 644 /home/node/.bashrc
 
 # Security hardening: Run as non-root user
 # The node:24-bookworm image includes a 'node' user (uid 1000)

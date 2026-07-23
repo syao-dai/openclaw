@@ -124,8 +124,14 @@ export function shouldPreserveThinkingBlocks(modelId?: string): boolean {
     return true;
   }
 
-  // Future-proofing: claude-5-x, claude-6-x etc. should also preserve
+  // Future-proofing: claude-5-x, claude-6-x etc. should also preserve, in both
+  // the "claude-<major>" and "claude-<family>-<major>" naming schemes
+  // (e.g. "claude-sonnet-5-5", "fais_dev_claude-opus-6").
   if (/claude-[5-9]/.test(id) || /claude-\d{2,}/.test(id)) {
+    return true;
+  }
+  // The version is at most two digits so date suffixes like "sonnet-20241022" do not match.
+  if (/(?:sonnet|opus|haiku|fable)-(?:[5-9]|[1-9]\d)(?!\d)/.test(id)) {
     return true;
   }
 

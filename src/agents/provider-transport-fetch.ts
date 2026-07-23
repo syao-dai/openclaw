@@ -26,6 +26,7 @@ import {
   ssrfPolicyFromHttpBaseUrlAllowedOrigin,
   type SsrFPolicy,
 } from "../infra/net/ssrf.js";
+import { retryAsync } from "../infra/retry.js";
 import type { Model } from "../llm/types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveDebugProxySettings } from "../proxy-capture/env.js";
@@ -51,6 +52,19 @@ import {
 const DEFAULT_MAX_SDK_RETRY_WAIT_SECONDS = 60;
 const OPENAI_SDK_STREAM_CONTENT_SNIFF_BYTES = 2 * 1024;
 const log = createSubsystemLogger("provider-transport-fetch");
+
+// Transient DNS resolution failures (a blip in the resolver, not a real outage)
+// happen before any HTTP response exists, so neither the SDK's status-code retry
+// nor model failover's fallback-provider path help recover the in-flight request's
+// accumulated prompt cache. A few quick same-endpoint retries here can land inside
+// the DNS cache TTL and avoid discarding that context.
+const DNS_TRANSIENT_FETCH_ERROR_RE = /\benotfound\b|\beai_again\b|\bgetaddrinfo\b/i;
+const MODEL_FETCH_DNS_RETRY_CONFIG = {
+  attempts: 3,
+  minDelayMs: 1000,
+  maxDelayMs: 2000,
+  jitter: 0.2,
+};
 
 /** Max bytes for an entire JSON body synthesized into SSE frames. Prevents OOM
  *  when a hostile streaming endpoint returns a never-ending JSON response
@@ -928,10 +942,29 @@ export function buildGuardedModelFetch(
         rawHeaders,
         localServiceSignal,
       );
-      result = await fetchWithSsrFGuard(
-        useEnvProxy
-          ? withTrustedEnvProxyGuardedFetchMode(guardedFetchOptions)
-          : guardedFetchOptions,
+      // `request.body` (set only when the SDK passed a `Request` instance) is a
+      // ReadableStream that the first attempt consumes; retrying it would replay
+      // an already-locked stream. Only the plain string/URL input path — the
+      // shape every LLM provider call in this codebase actually uses — gets the
+      // retry, since its body (if any) is a reusable string.
+      const canRetryDnsFailure = !request;
+      result = await retryAsync(
+        () =>
+          fetchWithSsrFGuard(
+            useEnvProxy
+              ? withTrustedEnvProxyGuardedFetchMode(guardedFetchOptions)
+              : guardedFetchOptions,
+          ),
+        {
+          ...MODEL_FETCH_DNS_RETRY_CONFIG,
+          shouldRetry: (err) =>
+            canRetryDnsFailure && DNS_TRANSIENT_FETCH_ERROR_RE.test(summarizeError(err)),
+          onRetry: (info) =>
+            log.warn(
+              `[model-fetch] retry provider=${model.provider} api=${model.api} model=${model.id} ` +
+                `attempt=${info.attempt}/${info.maxAttempts} in ${info.delayMs}ms ${summarizeError(info.err)}`,
+            ),
+        },
       );
     } catch (error) {
       log.warn(

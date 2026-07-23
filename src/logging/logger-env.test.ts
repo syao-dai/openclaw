@@ -11,6 +11,7 @@ import { createSuiteLogPathTracker } from "./log-test-helpers.js";
 import { loggingState } from "./state.js";
 
 const defaultMaxFileBytes = 100 * 1024 * 1024;
+const defaultMaxLogAgeMs = 24 * 60 * 60 * 1000;
 const logPathTracker = createSuiteLogPathTracker("openclaw-test-env-log-level-");
 
 describe("OPENCLAW_LOG_LEVEL", () => {
@@ -57,6 +58,7 @@ describe("OPENCLAW_LOG_LEVEL", () => {
       level: "debug",
       file: testLogPath,
       maxFileBytes: defaultMaxFileBytes,
+      maxLogAgeMs: defaultMaxLogAgeMs,
     });
     expect(getResolvedConsoleSettings()).toEqual({
       level: "debug",
