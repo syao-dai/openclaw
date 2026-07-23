@@ -11,3 +11,14 @@ apps/android/app/src/main/java/ai/openclaw/app/i18n/NativeStringResources.kt lin
 apps/ios/Resources/Localizable.xcstrings linguist-generated
 apps/macos/Sources/OpenClaw/Resources/Localizable.xcstrings linguist-generated
 apps/ios/**/*.lproj/InfoPlist.strings linguist-generated
+
+# White-box source-code export (scripts/export-whitebox-src.sh):
+# native mobile/desktop client apps are not part of the deployed web/docker
+# image (see .dockerignore, which excludes all of apps/ for the same reason)
+# and are dropped from the delivered archive. apps/shared/ stays in — it
+# feeds the Canvas A2UI bundle that ships inside the runtime image.
+apps/android/** export-ignore
+apps/ios/** export-ignore
+apps/macos/** export-ignore
+apps/macos-mlx-tts/** export-ignore
+apps/swabble/** export-ignore

@@ -1,6 +1,7 @@
 import {
   getEventStreamCompletion,
   getFirstStreamEventTimeoutMs,
+  notifyLlmRequestActivity,
   onLlmRequestActivity,
 } from "@openclaw/ai/internal/runtime";
 import { withProviderAcceptanceObserver } from "@openclaw/ai/transports";
@@ -322,9 +323,18 @@ export function streamWithIdleTimeout(
     } else {
       sourceSignal?.addEventListener("abort", abortFromSourceSignal, { once: true });
     }
+    // Providers that defer their events (e.g. Claude streaming-refusal buffering)
+    // report liveness only on this wrapper's signal. Relay it to the caller's
+    // signal so outer observers, like the stuck-session watchdog, see it too.
+    const unsubscribeActivityRelay = sourceSignal
+      ? onLlmRequestActivity(streamAbortController.signal, () =>
+          notifyLlmRequestActivity(sourceSignal),
+        )
+      : undefined;
     const cleanupSourceSignal = () => {
       clearRequestDeadline();
       sourceSignal?.removeEventListener("abort", abortFromSourceSignal);
+      unsubscribeActivityRelay?.();
     };
     const withSourceAbort = <T>(promise: Promise<T>) =>
       sourceSignal ? abortable(sourceSignal, promise) : promise;

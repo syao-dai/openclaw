@@ -90,6 +90,11 @@ function truncateToolResultToChars(
   if (estimatedChars <= maxChars) {
     return msg;
   }
+  log.debug(
+    `[tool-result-context-guard] reducing tool result toolCallId=${
+      (msg as { toolCallId?: unknown }).toolCallId ?? "unknown"
+    } estimatedChars=${estimatedChars} maxChars=${maxChars}`,
+  );
   const content = (msg as { content?: unknown }).content;
   if (Array.isArray(content)) {
     const isImage = (block: unknown) =>

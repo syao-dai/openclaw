@@ -401,6 +401,21 @@ export function truncateToolResultText(
   maxChars: number,
   options: ToolResultTruncationOptions = {},
 ): string {
+  const result = truncateToolResultTextUnlogged(text, maxChars, options);
+  if (result !== text) {
+    log.debug(
+      `[tool-result-truncation] text truncated originalChars=${text.length} ` +
+        `keptChars=${result.length} maxChars=${maxChars}`,
+    );
+  }
+  return result;
+}
+
+function truncateToolResultTextUnlogged(
+  text: string,
+  maxChars: number,
+  options: ToolResultTruncationOptions,
+): string {
   const suffixFactory = options.suffix ?? DEFAULT_SUFFIX;
   const budgetOptions = { minimumRawWeight: options.minimumRawWeight };
   const minKeepChars = resolveEffectiveMinKeepChars(maxChars, options, suffixFactory);
@@ -498,6 +513,22 @@ export function truncateToolResultMessage(
   msg: AgentMessage,
   maxChars: number,
   options: ToolResultTruncationOptions = {},
+): AgentMessage {
+  const result = truncateToolResultMessageUnlogged(msg, maxChars, options);
+  if (result !== msg) {
+    log.debug(
+      `[tool-result-truncation] message truncated toolCallId=${
+        (msg as { toolCallId?: unknown }).toolCallId ?? "unknown"
+      } maxChars=${maxChars}`,
+    );
+  }
+  return result;
+}
+
+function truncateToolResultMessageUnlogged(
+  msg: AgentMessage,
+  maxChars: number,
+  options: ToolResultTruncationOptions,
 ): AgentMessage {
   const suffixFactory = options.suffix ?? DEFAULT_SUFFIX;
   const budgetOptions = { minimumRawWeight: options.minimumRawWeight };
