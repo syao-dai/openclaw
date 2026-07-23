@@ -9,6 +9,7 @@ import {
   captureExecRequestOwners,
   withExecRequestOwners,
 } from "../../infra/exec-request-context.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveSnakeCaseParamKey } from "../../param-key.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { createLazyPromise } from "../../shared/lazy-promise.js";
@@ -73,8 +74,11 @@ import {
   PLACED_SESSIONS_SPAWN_DESCRIPTION,
 } from "./sessions-placement-tool-contract.js";
 import type { SessionsSpawnToolOptions } from "./sessions-spawn-options.js";
+import { waitForSubagentRunWithRelay } from "./sessions-spawn-subagent-relay.js";
 import { maybeSpawnVisibleSession } from "./sessions-spawn-visible.js";
 import { SESSIONS_SPAWN_SESSION_SCHEMA } from "./sessions-spawn-visible.schema.js";
+
+const log = createSubsystemLogger("agents/tools/sessions-spawn");
 
 const SESSIONS_SPAWN_RUNTIMES = ["subagent", "acp"] as const;
 const SESSIONS_SPAWN_SANDBOX_MODES = ["inherit", "require"] as const;
@@ -617,6 +621,7 @@ export function createSessionsSpawnTool(
           return spawnResult(result);
         }
 
+        const spawnStartedAt = Date.now();
         const result = await spawnSubagentDirect(
           {
             ...spawnParams,
@@ -672,6 +677,35 @@ export function createSessionsSpawnTool(
         );
 
         recordAcceptedSessionSpawn(result, result.context);
+        // Fork behavior: a plain native run blocks until the child settles and relays its
+        // progress into this run's stream. Persistent sessions and `completionTarget`
+        // handoffs deliver through their own paths, so they must not block here.
+        if (
+          expectsCompletionMessage &&
+          completionTarget === undefined &&
+          result.status === "accepted" &&
+          result.mode === "run" &&
+          result.runId &&
+          result.childSessionKey
+        ) {
+          const settled = await waitForSubagentRunWithRelay({
+            result: { ...result, runId: result.runId, childSessionKey: result.childSessionKey },
+            parentSessionKey: opts?.agentSessionKey,
+            parentRunId: opts?.requesterRunId,
+            startTime: spawnStartedAt,
+            spawnElapsedMs: Date.now() - spawnStartedAt,
+          });
+          if (settled) {
+            return jsonResult(settled);
+          }
+        } else if (result.status === "accepted") {
+          // Explains why a plain spawn returned immediately instead of blocking and relaying.
+          log.info(
+            `sessions_spawn relay skipped: expectsCompletionMessage=${expectsCompletionMessage} ` +
+              `completionTarget=${completionTarget ?? "none"} mode=${result.mode} ` +
+              `hasRunId=${Boolean(result.runId)} hasChildSessionKey=${Boolean(result.childSessionKey)}`,
+          );
+        }
         return spawnResult(result);
       }),
     ),

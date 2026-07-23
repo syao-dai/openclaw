@@ -1,4 +1,5 @@
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
+import { notifyLlmRequestActivity } from "@openclaw/ai/internal/runtime";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import {
@@ -622,6 +623,89 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents stream proxy", () => {
       await waitForDiagnosticEventsDrained();
       stop();
     }
+  });
+
+  it("counts provider activity as progress while the provider defers stream events", async () => {
+    // Claude streaming-refusal buffering yields nothing until stop; only the
+    // activity notifications show the model is still generating.
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const controller = new AbortController();
+    async function* stream() {
+      await Promise.resolve();
+      yield { type: "done" };
+    }
+    const wrapped = wrap((() => stream()) as unknown as StreamFn, {
+      sessionKey: "session-key",
+      sessionId: "session-id",
+      provider: "anthropic_bu",
+      model: "fais_dev_claude-sonnet-5-5",
+    });
+    const returned = wrapped(
+      {} as never,
+      {} as never,
+      { signal: controller.signal } as never,
+    ) as AsyncIterable<unknown>;
+
+    notifyLlmRequestActivity(controller.signal);
+    await waitForDiagnosticEventsDrained();
+    now += 600_000;
+    let snapshot = getDiagnosticSessionActivitySnapshot({
+      sessionKey: "session-key",
+      sessionId: "session-id",
+    });
+    expect(snapshot.lastProgressReason).toBe("model_call:stream_progress");
+    expect(snapshot.lastProgressAgeMs).toBe(600_000);
+
+    notifyLlmRequestActivity(controller.signal);
+    await waitForDiagnosticEventsDrained();
+    snapshot = getDiagnosticSessionActivitySnapshot({
+      sessionKey: "session-key",
+      sessionId: "session-id",
+    });
+    expect(snapshot.lastProgressAgeMs).toBe(0);
+
+    for await (const _chunk of returned) {
+      // drain
+    }
+    await waitForDiagnosticEventsDrained();
+  });
+
+  it("stops listening for provider activity once the model call completes", async () => {
+    const controller = new AbortController();
+    async function* stream() {
+      yield { type: "text_delta", delta: "only" };
+    }
+    const wrapped = wrap((() => stream()) as unknown as StreamFn, {
+      sessionKey: "session-key",
+      sessionId: "session-id",
+      provider: "anthropic_bu",
+      model: "fais_dev_claude-sonnet-5-5",
+    });
+    const returned = wrapped(
+      {} as never,
+      {} as never,
+      { signal: controller.signal } as never,
+    ) as AsyncIterable<unknown>;
+    for await (const _chunk of returned) {
+      // drain
+    }
+    await waitForDiagnosticEventsDrained();
+
+    let now = 2_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const before = getDiagnosticSessionActivitySnapshot({
+      sessionKey: "session-key",
+      sessionId: "session-id",
+    });
+    now += 5_000;
+    notifyLlmRequestActivity(controller.signal);
+    await waitForDiagnosticEventsDrained();
+    const after = getDiagnosticSessionActivitySnapshot({
+      sessionKey: "session-key",
+      sessionId: "session-id",
+    });
+    expect(after.lastProgressReason).toBe(before.lastProgressReason);
   });
 
   it("counts async onPayload replacements instead of raw payload content", async () => {

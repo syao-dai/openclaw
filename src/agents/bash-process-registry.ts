@@ -24,6 +24,14 @@ const DEFAULT_PENDING_OUTPUT_CHARS = 30_000;
 const MAX_FINISHED_SESSION_COUNT = 50;
 const MAX_FINISHED_SESSION_OUTPUT_CHARS = 2_000_000;
 
+/**
+ * Maximum characters to keep in process tail for display.
+ * The tail shows the LAST N characters of process output.
+ * Full output is always preserved in aggregated field.
+ * 
+ */
+export const PROCESS_TAIL_MAX_CHARS = 40_000;
+
 function clampTtl(value: number | undefined) {
   return clampWithDefault(value, DEFAULT_JOB_TTL_MS, MIN_JOB_TTL_MS, MAX_JOB_TTL_MS);
 }
@@ -244,7 +252,7 @@ export function appendOutput(session: ProcessSession, stream: "stdout" | "stderr
   session.truncated =
     session.truncated || aggregated.length < session.aggregated.length + chunk.length;
   session.aggregated = aggregated;
-  session.tail = tail(session.aggregated, 2000);
+  session.tail = tail(session.aggregated, PROCESS_TAIL_MAX_CHARS);
 }
 
 /** Drains pending chunks in producer callback order for a process poll. */
@@ -316,7 +324,7 @@ export function markExited(
   session.exitSignal = exitSignal;
   session.exitReason = exitReason;
   session.noOutputTimedOut = noOutputTimedOut;
-  session.tail = tail(session.aggregated, 2000);
+  session.tail = tail(session.aggregated, PROCESS_TAIL_MAX_CHARS);
   // Finalizer diagnostics are already appended. Freeze output before retention
   // accounts for its size, and release the live per-callback chunk objects.
   const pending = drainSession(session);
@@ -466,7 +474,7 @@ function copyOutputText(text: string): string {
 }
 
 /** Returns the last `max` characters of text without adding ellipses. */
-export function tail(text: string, max = 2000) {
+export function tail(text: string, max = PROCESS_TAIL_MAX_CHARS) {
   if (text.length <= max) {
     return text;
   }

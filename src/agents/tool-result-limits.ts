@@ -3,7 +3,7 @@ import { estimateToolResultTextChars } from "./embedded-agent-runner/tool-result
 
 const MAX_TOOL_RESULT_CONTEXT_SHARE = 0.3;
 
-export const DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS = 16_000;
+export const DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS = 40_000;
 const LARGE_CONTEXT_MAX_LIVE_TOOL_RESULT_CHARS = 32_000;
 const XL_CONTEXT_MAX_LIVE_TOOL_RESULT_CHARS = 64_000;
 const LARGE_CONTEXT_TOOL_RESULT_TOKENS = 100_000;

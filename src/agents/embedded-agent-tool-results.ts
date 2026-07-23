@@ -25,7 +25,7 @@ import {
   readToolResultStatus,
 } from "./tool-result-error.js";
 
-const TOOL_RESULT_MAX_CHARS = 8000;
+const TOOL_RESULT_MAX_CHARS = 40_000;
 const TOOL_ERROR_MAX_CHARS = 400;
 const LIVE_EXEC_OUTPUT_MAX_CHARS = 8000;
 const TOOL_DENIAL_ERROR_CODES = ["SYSTEM_RUN_DENIED", "INVALID_REQUEST"] as const;

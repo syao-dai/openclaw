@@ -54,6 +54,8 @@ export const LoggingConfigSchema = z
     file: z.string().optional(),
     /** Maximum size of a single log file in bytes before rotation. Default: 100 MB. */
     maxFileBytes: z.number().int().positive().optional(),
+    /** Days to keep dated rolling log files (openclaw-YYYY-MM-DD.log) before pruning. Default: 1. */
+    retentionDays: z.number().int().positive().optional(),
     consoleLevel: LoggingLevelSchema.optional(),
     consoleStyle: z.union([z.literal("pretty"), z.literal("json")]).optional(),
     /** Regex patterns used to redact sensitive tokens from logs and transcripts. */
