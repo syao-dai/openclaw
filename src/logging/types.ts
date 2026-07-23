@@ -7,6 +7,7 @@ export type LoggerSettings = {
   level?: LogLevel;
   file?: string;
   maxFileBytes?: number;
+  retentionDays?: number;
   consoleLevel?: LogLevel;
   consoleStyle?: ConsoleStyle;
 };

@@ -28,6 +28,10 @@ export type ModelCallObservationState = {
   providerAcceptanceKind?: ProviderAcceptance["kind"];
   responseStatus?: number;
   responseStreamBytes: number;
+  /** Chunks yielded to the stream consumer. */
+  streamChunkCount: number;
+  /** Provider activity notifications, including events the provider defers until stop. */
+  streamActivityCount: number;
   /** Observed provider callbacks/chunks, not recovery or visible-content progress. */
   lastProviderActivityAtMs?: number;
   terminalReason?: "stop" | "length" | "toolUse" | "error" | "aborted";
@@ -244,6 +248,7 @@ function observeModelResponse(
   }
   state.timeToFirstByteMs ??= Math.max(0, Date.now() - startedAt);
   if (kind === "chunk") {
+    state.streamChunkCount += 1;
     observeOutputMessageContent(state, value);
   } else {
     observeModelCallTerminalMessage(state, value);
@@ -314,6 +319,8 @@ export function createModelObserver(params: {
     : undefined;
   const state: ModelCallObservationState = {
     responseStreamBytes: 0,
+    streamChunkCount: 0,
+    streamActivityCount: 0,
     modelContent,
     contentCapture: params.contentCapture,
     suppressPluginHooks: params.suppressPluginHooks,

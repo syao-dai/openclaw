@@ -1,4 +1,5 @@
 import { modelRequestBodyState } from "@openclaw/ai/internal/openai";
+import { onLlmRequestActivity } from "@openclaw/ai/internal/runtime";
 import { withProviderAcceptanceObserver } from "@openclaw/ai/transports";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -37,6 +38,7 @@ import type {
   PluginHookModelCallStartedEvent,
 } from "../../../plugins/hook-types.js";
 import type { StreamFn } from "../../runtime/index.js";
+import { log } from "../logger.js";
 import type {
   createModelObserver,
   ModelCallEventBase,
@@ -273,6 +275,19 @@ export function createModelLifecycle(params: {
     { config: params.ctx.config },
   );
   const propagatedOptions = withDiagnosticRequestContext(params.options, trace, observer, callId);
+  // Some providers (e.g. Claude streaming-refusal buffering) hold every event
+  // until stop, so the iterator sees nothing for the whole generation. Their
+  // activity notifications are the only liveness signal for the watchdog.
+  const unsubscribeActivity = params.options?.signal
+    ? onLlmRequestActivity(params.options.signal, () => {
+        if (observer.state.terminalEventEmitted) {
+          return;
+        }
+        observer.state.streamActivityCount += 1;
+        observer.state.lastProviderActivityAtMs = Date.now();
+        observer.maybeEmitStreamProgress(eventBase);
+      })
+    : undefined;
   function emitModelCallEnded(failure: { error: unknown } | undefined): void {
     const { ownerGeneration, config } = params.ctx;
     if (observer.state.terminalEventEmitted) {
@@ -281,6 +296,14 @@ export function createModelLifecycle(params: {
     observer.state.terminalEventEmitted = true;
     const terminalAtMs = Date.now();
     const durationMs = terminalAtMs - startedAt;
+    unsubscribeActivity?.();
+    log.debug(
+      `model call stream summary: runId=${eventBase.runId} callId=${eventBase.callId} ` +
+        `outcome=${failure ? "error" : "completed"} durationMs=${durationMs} ` +
+        `deltas=${observer.state.streamChunkCount} ` +
+        `activityEvents=${observer.state.streamActivityCount} ` +
+        `responseBytes=${observer.state.responseStreamBytes}`,
+    );
     const sizeTimingFields = observer.sizeTimingFields();
     const fields = failure ? modelCallErrorFields(failure.error) : undefined;
     const terminal = fields

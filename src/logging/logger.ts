@@ -47,7 +47,7 @@ export type { LoggerSettings } from "./types.js";
 const DEFAULT_LOG_DIR = DEFAULT_POSIX_TMP_ROOT;
 const DEFAULT_LOG_FILE = `${DEFAULT_LOG_DIR}/openclaw.log`; // legacy single-file path
 
-const MAX_LOG_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+const DEFAULT_LOG_RETENTION_DAYS = 1;
 const DEFAULT_MAX_LOG_FILE_BYTES = 100 * 1024 * 1024; // 100 MB
 let cachedHostname: string | null = null;
 
@@ -57,6 +57,7 @@ type ResolvedSettings = {
   level: LogLevel;
   file: string;
   maxFileBytes: number;
+  maxLogAgeMs: number;
 };
 type ResolvedRuntimeSettings = ResolvedSettings & { rolling: boolean };
 export type LoggerResolvedSettings = ResolvedSettings;
@@ -449,6 +450,7 @@ function resolveSettings(): ResolvedRuntimeSettings {
       level: "silent",
       file: DEFAULT_LOG_FILE,
       maxFileBytes: DEFAULT_MAX_LOG_FILE_BYTES,
+      maxLogAgeMs: resolveMaxLogAgeMs(undefined),
       rolling: false,
     };
   }
@@ -461,6 +463,7 @@ function resolveSettings(): ResolvedRuntimeSettings {
       level: "silent",
       file: resolveDefaultRollingLogFile(),
       maxFileBytes: DEFAULT_MAX_LOG_FILE_BYTES,
+      maxLogAgeMs: resolveMaxLogAgeMs(undefined),
       rolling: true,
     };
   }
@@ -474,7 +477,8 @@ function resolveSettings(): ResolvedRuntimeSettings {
   const rolling = cfg?.file ? isLegacyRollingLogFilePath(cfg.file) : true;
   const file = resolveActiveLogFileWithMode(cfg?.file ?? resolveDefaultActiveLogFile(), rolling);
   const maxFileBytes = resolveMaxLogFileBytes(cfg?.maxFileBytes);
-  return { level, file, maxFileBytes, rolling };
+  const maxLogAgeMs = resolveMaxLogAgeMs(cfg?.retentionDays);
+  return { level, file, maxFileBytes, maxLogAgeMs, rolling };
 }
 
 setLoggerFileTargetResolver(() => {
@@ -551,7 +555,7 @@ function buildLogger(): TsLogger<LogObj> {
           try {
             ensureLogDirectorySync(path.dirname(activeFile));
             if (settings.rolling) {
-              pruneOldRollingLogs(path.dirname(activeFile));
+              pruneOldRollingLogs(path.dirname(activeFile), settings.maxLogAgeMs);
             }
           } catch {
             // Still enqueue: the failed append reports this record through the transport warning.
@@ -592,6 +596,14 @@ function resolveMaxLogFileBytes(raw: unknown): number {
     return Math.floor(raw);
   }
   return DEFAULT_MAX_LOG_FILE_BYTES;
+}
+
+function resolveMaxLogAgeMs(raw: unknown): number {
+  const days =
+    typeof raw === "number" && Number.isFinite(raw) && raw > 0
+      ? Math.floor(raw)
+      : DEFAULT_LOG_RETENTION_DAYS;
+  return days * 24 * 60 * 60 * 1000;
 }
 
 export function getLogger(): TsLogger<LogObj> {
@@ -680,10 +692,10 @@ function resolveActiveLogFileWithMode(file: string, rolling: boolean): string {
   return rolling ? resolveRollingLogFilePathForDate(expandedFile, new Date()) : expandedFile;
 }
 
-function pruneOldRollingLogs(dir: string): void {
+function pruneOldRollingLogs(dir: string, maxAgeMs: number): void {
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const cutoff = Date.now() - MAX_LOG_AGE_MS;
+    const cutoff = Date.now() - maxAgeMs;
     for (const entry of entries) {
       if (!entry.isFile()) {
         continue;

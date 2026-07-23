@@ -168,6 +168,41 @@ function writeChatCompletionChoice(
   });
 }
 
+// Signals that the model is reasoning without forwarding the actual chain-of-thought:
+// open-webui's middleware already renders any non-empty `reasoning_content` delta as a
+// collapsible "reasoning" block, so a static placeholder surfaces a thinking indicator
+// while the real thinking text (evt.data.text/delta) is deliberately never sent here.
+const REASONING_PLACEHOLDER_TEXT = "Thinking…";
+// Heartbeat cadence for the "." kept-alive drip appended while a thinking phase is
+// still open, so a long reasoning stretch keeps visibly ticking without leaking text.
+const REASONING_HEARTBEAT_INTERVAL_MS = 30_000;
+
+// Tool execution reuses the same reasoning_content bubble/heartbeat as thinking.
+// There is no safe OpenAI-compatible signal for "the server already ran and
+// finished a tool call this turn": any non-empty `delta.tool_calls` gets
+// accumulated by open-webui's middleware and queued for open-webui itself to
+// execute once the stream ends, regardless of finish_reason. reasoning_content
+// has no such side effect, so a tool-start item event just relabels the same
+// placeholder/heartbeat instead of opening a second channel.
+function buildToolActivityPlaceholderText(title: unknown): string {
+  return typeof title === "string" && title ? `Running: ${title}` : "Working…";
+}
+
+// `reasoning_content` is an OpenAI-compatible extension absent from the SDK delta type.
+function writeAssistantReasoningChunk(
+  res: ServerResponse,
+  identity: ChatCompletionStreamIdentity,
+  content: string,
+) {
+  writeSse(res, {
+    id: identity.runId,
+    object: "chat.completion.chunk",
+    created: identity.created,
+    model: identity.model,
+    choices: [{ index: 0, delta: { reasoning_content: content }, finish_reason: null }],
+  });
+}
+
 function writeAssistantToolCallsIncrementalChunks(
   res: ServerResponse,
   params: ChatCompletionStreamIdentity & {
@@ -781,6 +816,26 @@ export async function handleOpenAiHttpRequest(
   let observedTerminalLifecycle = false;
   let terminalStreamError: { message: string; type: string; code?: string } | undefined;
   let terminalLifecyclePhase: "end" | "error" = "end";
+  let wroteReasoningPlaceholder = false;
+  let reasoningHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  const stopReasoningHeartbeat = () => {
+    if (reasoningHeartbeatTimer) {
+      clearInterval(reasoningHeartbeatTimer);
+      reasoningHeartbeatTimer = null;
+    }
+  };
+  const startReasoningHeartbeat = () => {
+    if (reasoningHeartbeatTimer || closed) {
+      return;
+    }
+    reasoningHeartbeatTimer = setInterval(() => {
+      if (closed) {
+        stopReasoningHeartbeat();
+        return;
+      }
+      writeAssistantReasoningChunk(res, streamIdentity, ".");
+    }, REASONING_HEARTBEAT_INTERVAL_MS);
+  };
 
   const requestFinalize = () => {
     if (closed || finalizeScheduled) {
@@ -823,6 +878,7 @@ export async function handleOpenAiHttpRequest(
       }
       closed = true;
       unsubscribe();
+      stopReasoningHeartbeat();
       writeChatCompletionChoice(
         res,
         streamIdentity,
@@ -854,7 +910,36 @@ export async function handleOpenAiHttpRequest(
       if (!content) {
         return;
       }
+      // Reasoning can resume after prose (e.g. between tool calls in the same
+      // run) — re-arm the placeholder so a later thinking phase is signaled too.
+      wroteReasoningPlaceholder = false;
+      stopReasoningHeartbeat();
       writeChatCompletionChoice(res, streamIdentity, { content });
+      return;
+    }
+
+    if (evt.stream === "thinking") {
+      if (!wroteReasoningPlaceholder) {
+        wroteReasoningPlaceholder = true;
+        writeAssistantReasoningChunk(res, streamIdentity, REASONING_PLACEHOLDER_TEXT);
+      }
+      startReasoningHeartbeat();
+      return;
+    }
+
+    if (evt.stream === "item") {
+      // Only the first item in an otherwise-quiet stretch writes a placeholder; later
+      // tool calls just keep the existing bubble's heartbeat alive: one continuous
+      // "still working" indicator per stretch, not one bubble per tool call.
+      if (!wroteReasoningPlaceholder && evt.data?.phase === "start") {
+        wroteReasoningPlaceholder = true;
+        writeAssistantReasoningChunk(
+          res,
+          streamIdentity,
+          buildToolActivityPlaceholderText(evt.data?.title),
+        );
+      }
+      startReasoningHeartbeat();
       return;
     }
 
@@ -882,6 +967,7 @@ export async function handleOpenAiHttpRequest(
     }
     closed = true;
     unsubscribe();
+    stopReasoningHeartbeat();
     writeSse(res, { error });
     writeDone(res);
     res.end();
@@ -895,6 +981,7 @@ export async function handleOpenAiHttpRequest(
   onDisconnect = () => {
     closed = true;
     unsubscribe();
+    stopReasoningHeartbeat();
     releaseStreamRootWork();
   };
 

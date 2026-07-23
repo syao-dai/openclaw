@@ -80,6 +80,7 @@ describe("logging/logger import", () => {
       level: "silent",
       file: "/tmp/openclaw/openclaw.log",
       maxFileBytes: 100 * 1024 * 1024,
+      maxLogAgeMs: 24 * 60 * 60 * 1000,
     });
     expect(module.isFileLogLevelEnabled("info")).toBe(false);
     expect(module.getLogger().info("browser-safe")).toBeUndefined();

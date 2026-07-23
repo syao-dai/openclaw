@@ -8,6 +8,7 @@ import { getResolvedLoggerSettings, resetLogger, setLoggerOverride } from "./log
 import { loggingState } from "./state.js";
 
 const defaultMaxFileBytes = 100 * 1024 * 1024;
+const defaultMaxLogAgeMs = 24 * 60 * 60 * 1000;
 const testLogPath = path.join(os.tmpdir(), "openclaw-test-env-log-level.log");
 
 describe("OPENCLAW_LOG_LEVEL", () => {
@@ -43,6 +44,7 @@ describe("OPENCLAW_LOG_LEVEL", () => {
       level: "debug",
       file: testLogPath,
       maxFileBytes: defaultMaxFileBytes,
+      maxLogAgeMs: defaultMaxLogAgeMs,
     });
     expect(getConsoleSettings()).toEqual({
       level: "debug",

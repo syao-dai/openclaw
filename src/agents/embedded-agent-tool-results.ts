@@ -18,6 +18,7 @@ import {
 } from "../logging/redact.js";
 import { truncateUtf16Safe } from "../utils.js";
 import { collectTextContentBlocks } from "./content-blocks.js";
+import { log } from "./embedded-agent-runner/logger.js";
 import { createToolResultPreparation } from "./embedded-agent-tool-result-preparation.js";
 import {
   isToolResultError,
@@ -71,6 +72,9 @@ function truncateToolText(
   if (text.length <= maxChars) {
     return text;
   }
+  log.debug(
+    `[tool-result-display] text truncated originalChars=${text.length} maxChars=${maxChars}`,
+  );
   return `${truncateUtf16Safe(text, maxChars)}${suffix}`;
 }
 
