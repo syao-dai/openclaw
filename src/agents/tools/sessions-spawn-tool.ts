@@ -526,7 +526,7 @@ export function createSessionsSpawnTool(
         log.info(
           `[sessions_spawn] ACP: IMMEDIATE_RETURN with status=${result.status} (Agent A continues immediately)`,
         );
-        return jsonResult(result);
+        return jsonResult(addRoleToFailureResult(result, requestedAgentId));
       }
 
       // Subagent runtime path
@@ -623,10 +623,19 @@ export function createSessionsSpawnTool(
         let headerSent = false;
         let detailsClosed = false;  // Track if we've closed the collapsible section
         let progressLineCount = 0;
-        let pendingText = "";  // Accumulate text until we have a complete line
+        // Thinking/reasoning deltas are display-only: they accumulate here so
+        // reasoning-heavy models still show progress lines, but they must never
+        // be checked by looksLikeReport() or count toward sustainedAnswerText —
+        // thinking prose routinely contains "---\n#" style dividers or just runs
+        // long, and either one used to get misread as the final answer starting.
+        let thinkingPreview = "";
+        let pendingText = "";  // Real assistant-text candidate for the final answer
         let lastEventWasToolCall = false;
         let accumulatedReportText = "";  // Accumulate all report text for final result
-        
+        // When the current uninterrupted run of real assistant text began (reset
+        // on every tool call). Backs the sustained-answer fallback below.
+        let textStreakStartedAt: number | undefined;
+
         // Helper function to remove markdown heading symbols from text
         const removeMarkdownHeadings = (text: string): string => {
           // Remove markdown heading symbols (# ## ### etc.) from each line
@@ -636,7 +645,25 @@ export function createSessionsSpawnTool(
             .map(line => line.replace(/^#+\s*/, ''))
             .join('\n');
         };
-        
+
+        // Progress lines relay raw thinking/text verbatim, which can run to
+        // 1000+ chars for reasoning-heavy models. Cap each preview so users see
+        // motion without a wall of text; the full content still reaches the
+        // final result via accumulatedReportText/agentBResult.
+        const PROGRESS_PREVIEW_MAX_CHARS = 150;
+        const truncateProgressPreview = (text: string): string =>
+          text.length > PROGRESS_PREVIEW_MAX_CHARS
+            ? `${text.slice(0, PROGRESS_PREVIEW_MAX_CHARS)}…`
+            : text;
+
+        // Models that keep calling tools interleave short remarks, not
+        // multi-second prose. If real (non-thinking) answer text has been
+        // flowing continuously this long without a new tool call, treat it as
+        // the final answer even without an explicit 🦉 marker — otherwise a
+        // model that forgets the marker leaves the "執行中" section open for
+        // the entire remaining run.
+        const SUSTAINED_ANSWER_TEXT_MS = 10_000;
+
         // Helper function to detect if text looks like a report
         const looksLikeReport = (text: string): boolean => {
           const trimmed = text.trim();
@@ -649,9 +676,9 @@ export function createSessionsSpawnTool(
             return true;
           }
           // Check if text contains --- followed by markdown heading
-          if (/---\s*#+\s/.test(trimmed)) {
-            return true;
-          }
+          // if (/---\s*#+\s/.test(trimmed)) {
+          //   return true;
+          // }
           // Detect Chinese report keywords at start or after ---
           // if (/^(#+)?\s*(報告|分析報告|財務報告|財務分析|分析結果|執行結果)/.test(trimmed)) {
           //   return true;
@@ -675,17 +702,45 @@ export function createSessionsSpawnTool(
           }
           // Track tool calls to know when to emit accumulated text
           if (evt.stream === "tool") {
-            // Tool call started - flush any pending text
-            if (pendingText.trim().length > 0 && parentRunId && parentSessionKey) {
+            if (detailsClosed) {
+              // We previously guessed the final answer had started (🦉 or the
+              // sustained-answer fallback below), but the model is still
+              // calling tools. Reopen a fresh collapsible section instead of
+              // silently hiding the renewed activity under a "completed" banner.
+              detailsClosed = false;
+              thinkingPreview = "";
+              pendingText = "";
+              textStreakStartedAt = undefined;
+              if (parentRunId && parentSessionKey) {
+                const reopenText = `\n\n<details open>\n<summary>🔄 ${childAgentLabel} 執行中...（繼續處理，點擊摺疊/展開）</summary>\n\n`;
+                log.info(
+                  `[sessions_spawn] SUBAGENT STREAMING: Tool call after details were closed — reopening section`,
+                );
+                emitAgentEvent({
+                  runId: parentRunId,
+                  sessionKey: parentSessionKey,
+                  stream: "assistant",
+                  data: {
+                    text: reopenText,
+                    delta: reopenText,
+                  },
+                });
+              }
+              lastEventWasToolCall = true;
+              return;
+            }
+            // Tool call started - flush any pending thinking/text preview
+            const combinedPreview = `${thinkingPreview}${pendingText}`.trim();
+            if (combinedPreview.length > 0 && parentRunId && parentSessionKey) {
               // Remove markdown headings from accumulated text to avoid rendering as title in Open WebUI
-              const cleanedText = removeMarkdownHeadings(pendingText.trim());
+              const cleanedText = truncateProgressPreview(removeMarkdownHeadings(combinedPreview));
               const formattedText = `> 📌 ${cleanedText}\n\n`;
               progressLineCount++;
-              
+
               log.info(
-                `[sessions_spawn] SUBAGENT STREAMING: Flushing accumulated text (${pendingText.length} chars) before tool call`,
+                `[sessions_spawn] SUBAGENT STREAMING: Flushing accumulated text (${combinedPreview.length} chars) before tool call`,
               );
-              
+
               emitAgentEvent({
                 runId: parentRunId,
                 sessionKey: parentSessionKey,
@@ -695,23 +750,59 @@ export function createSessionsSpawnTool(
                   delta: formattedText,
                 },
               });
-              pendingText = "";
             }
+            thinkingPreview = "";
+            pendingText = "";
+            textStreakStartedAt = undefined;
             lastEventWasToolCall = true;
             return;
           }
-        
+
+          // Thinking/reasoning deltas land on their own stream (see
+          // AgentEventStream in agent-events.ts) instead of "assistant". Feed
+          // them into thinkingPreview (display-only) so they still flush with
+          // the "> 📌" prefix at the next tool-call/report boundary instead of
+          // being silently dropped — which is what made reasoning-heavy models
+          // show no progress lines at all. This buffer is never checked by
+          // looksLikeReport() and never counted by the sustained-answer timer.
+          if (evt.stream === "thinking" && evt.data) {
+            const thinkingDelta = evt.data.delta;
+            if (
+              typeof thinkingDelta === "string" &&
+              thinkingDelta.length > 0 &&
+              parentRunId &&
+              parentSessionKey
+            ) {
+              if (!headerSent) {
+                headerSent = true;
+                emitAgentEvent({
+                  runId: parentRunId,
+                  sessionKey: parentSessionKey,
+                  stream: "assistant",
+                  data: {
+                    text: `\n\n<details open>\n<summary>🔄 ${childAgentLabel} 執行中... (點擊摺疊/展開)</summary>\n\n> 📋 **Session**: \`${childSessionKey}\`\n\n`,
+                    delta: `\n\n<details open>\n<summary>🔄 ${childAgentLabel} 執行中... (點擊摺疊/展開)</summary>\n\n> 📋 **Session**: \`${childSessionKey}\`\n\n`,
+                  },
+                });
+              }
+              log.info(
+                `[sessions_spawn] SUBAGENT STREAMING: Received thinking delta (${thinkingDelta.length} chars)`,
+              );
+              thinkingPreview += thinkingDelta;
+            }
+            return;
+          }
 
           // Only relay 'assistant' stream with text content
           if (evt.stream === "assistant" && evt.data) {
             const delta = evt.data.delta;
-            
+
             // Check if this is a text delta (not tool calls, media, etc.)
             if (typeof delta === "string" && delta.length > 0 && parentRunId && parentSessionKey) {
               log.info(
                  `[sessions_spawn] SUBAGENT STREAMING: Received text delta (${delta.length} chars), lastWasToolCall=${lastEventWasToolCall}`,
               );
-              
+
               // Send collapsible header on first output
               if (!headerSent) {
                 headerSent = true;
@@ -725,78 +816,69 @@ export function createSessionsSpawnTool(
                   },
                 });
               }
-              
-              // If this is the first text after a tool call, flush pending and start new line
-              if (lastEventWasToolCall && pendingText.trim().length > 0) {
-                // Check if pending text looks like a report
-                if (!detailsClosed && looksLikeReport(pendingText)) {
-                  log.info(
-                    `[sessions_spawn] SUBAGENT STREAMING: Detected report start, closing details`,
+
+              // Coming out of a tool call (or the run's very first delta):
+              // flush whatever thinking accumulated in the interim as its own
+              // progress line first. Thinking never counts toward "does this
+              // look like the final answer" — only real answer text does.
+              if (lastEventWasToolCall) {
+                if (thinkingPreview.trim().length > 0) {
+                  const cleanedThinking = truncateProgressPreview(
+                    removeMarkdownHeadings(thinkingPreview.trim()),
                   );
-                  // Close details section
-                  emitAgentEvent({
-                    runId: parentRunId,
-                    sessionKey: parentSessionKey,
-                    stream: "assistant",
-                    data: {
-                      text: `\n</details>\n\n---\n\n✅ ${childAgentLabel} 執行完成，開始生成報告 (${progressLineCount} 條進度更新)\n\n`,
-                      delta: `\n</details>\n\n---\n\n✅ ${childAgentLabel} 執行完成，開始生成報告 (${progressLineCount} 條進度更新)\n\n`,
-                    },
-                  });
-                  detailsClosed = true;
-                  // Emit report text directly without blockquote
-                  emitAgentEvent({
-                    runId: parentRunId,
-                    sessionKey: parentSessionKey,
-                    stream: "assistant",
-                    data: {
-                      text: pendingText.trim(),
-                      delta: pendingText.trim(),
-                    },
-                  });
-                  pendingText = delta;  // Start new accumulation
-                } else {
-                  // Remove markdown headings from accumulated text to avoid rendering as title in Open WebUI
-                  const cleanedText = removeMarkdownHeadings(pendingText.trim());
-                  const formattedText = `> 📌 ${cleanedText}\n\n`;
+                  const formattedThinking = `> 📌 ${cleanedThinking}\n\n`;
                   progressLineCount++;
                   log.info(
-                    `[sessions_spawn] SUBAGENT STREAMING: Flushing accumulated text (${pendingText.length} chars) after tool call`,
+                    `[sessions_spawn] SUBAGENT STREAMING: Flushing accumulated thinking (${thinkingPreview.length} chars) after tool call`,
                   );
-                  
                   emitAgentEvent({
                     runId: parentRunId,
                     sessionKey: parentSessionKey,
                     stream: "assistant",
                     data: {
-                      text: formattedText,
-                      delta: formattedText,
+                      text: formattedThinking,
+                      delta: formattedThinking,
                     },
                   });
-                  pendingText = delta;  // Start new accumulation
+                  thinkingPreview = "";
                 }
                 lastEventWasToolCall = false;
-              } else {
-                // Accumulate text
-                pendingText += delta;
-                
-                // Check if accumulated text looks like a report and we haven't closed details yet
-                if (!detailsClosed && headerSent && looksLikeReport(pendingText)) {
+              }
+
+              // Mark the start of a fresh, uninterrupted run of real answer
+              // text. Keyed off pendingText being empty rather than
+              // lastEventWasToolCall so it also covers a model that writes
+              // text without ever calling a tool first.
+              if (pendingText.length === 0) {
+                textStreakStartedAt = Date.now();
+              }
+              pendingText += delta;
+
+              // Check whether the accumulated real answer text now looks like
+              // the final report — either an explicit 🦉 marker, or (fallback)
+              // it has been flowing continuously long enough that it's very
+              // unlikely to just be a between-tool-call remark.
+              if (!detailsClosed) {
+                const matchedMarker = looksLikeReport(pendingText);
+                const sustainedAnswer =
+                  !matchedMarker &&
+                  textStreakStartedAt !== undefined &&
+                  Date.now() - textStreakStartedAt >= SUSTAINED_ANSWER_TEXT_MS;
+                if (matchedMarker || sustainedAnswer) {
                   log.info(
-                    `[sessions_spawn] SUBAGENT STREAMING: Detected report start in accumulated text, closing details and starting streaming`,
+                    `[sessions_spawn] SUBAGENT STREAMING: Detected report start (${matchedMarker ? "🦉/marker" : "sustained answer text, no marker"}), closing details`,
                   );
-                  // Close details section
+                  const closeText = `\n</details>\n\n---\n\n**✅ ${childAgentLabel} 執行完成，開始生成報告** (${progressLineCount} 條進度更新)\n\n`;
                   emitAgentEvent({
                     runId: parentRunId,
                     sessionKey: parentSessionKey,
                     stream: "assistant",
                     data: {
-                      text: `\n</details>\n\n---\n\n**✅ ${childAgentLabel} 執行完成，開始生成報告** (${progressLineCount} 條進度更新)\n\n`,
-                      delta: `\n</details>\n\n---\n\n**✅ ${childAgentLabel} 執行完成，開始生成報告** (${progressLineCount} 條進度更新)\n\n`,
+                      text: closeText,
+                      delta: closeText,
                     },
                   });
                   detailsClosed = true;
-                  // Flush accumulated text and start streaming
                   emitAgentEvent({
                     runId: parentRunId,
                     sessionKey: parentSessionKey,
@@ -806,29 +888,29 @@ export function createSessionsSpawnTool(
                       delta: pendingText,
                     },
                   });
-                  accumulatedReportText += pendingText;  // Save to accumulated result
-                  pendingText = "";  // Clear buffer - now in streaming mode
+                  accumulatedReportText += pendingText;
+                  pendingText = "";
                 }
-                lastEventWasToolCall = false;
-                
-                // If details already closed (report mode), stream immediately
-                if (detailsClosed && pendingText.length > 0) {
-                  log.info(
-                    `[sessions_spawn] SUBAGENT STREAMING: Streaming report text (${pendingText.length} chars)`,
-                  );
-                  emitAgentEvent({
-                    runId: parentRunId,
-                    sessionKey: parentSessionKey,
-                    stream: "assistant",
-                    data: {
-                      text: pendingText,
-                      delta: pendingText,
-                    },
-                  });
-                  accumulatedReportText += pendingText;  // Save to accumulated result
-                  pendingText = "";  // Clear after streaming
-                }
+              } else {
+                // Already in report-streaming mode: relay immediately.
+                log.info(
+                  `[sessions_spawn] SUBAGENT STREAMING: Streaming report text (${pendingText.length} chars)`,
+                );
+                emitAgentEvent({
+                  runId: parentRunId,
+                  sessionKey: parentSessionKey,
+                  stream: "assistant",
+                  data: {
+                    text: pendingText,
+                    delta: pendingText,
+                  },
+                });
+                accumulatedReportText += pendingText;
+                pendingText = "";
               }
+              // Otherwise pendingText keeps accumulating: it flushes as a
+              // progress line at the next tool call, or triggers the report
+              // detection above once looksLikeReport()/sustainedAnswer fires.
             }
           }
         });
@@ -885,40 +967,46 @@ export function createSessionsSpawnTool(
               `[sessions_spawn] SUBAGENT STREAMING: Relayed ${progressLineCount} progress updates`,
             );
             unsubscribe();
-            // Send any remaining pending text
-            if (pendingText.trim().length > 0 && headerSent && parentRunId && parentSessionKey) {
-              if (detailsClosed) {
-                // If details already closed, send as plain text
+            // Send any remaining thinking/text. The run is over now, so unlike
+            // the live progress-line path this is never a "preview" of more
+            // to come — it's the tail of the real answer, so it goes out in
+            // full (no truncateProgressPreview) whether or not a report/
+            // sustained-answer trigger ever fired while the run was live.
+            const remainingText = `${thinkingPreview}${pendingText}`.trim();
+            if (remainingText.length > 0 && headerSent && parentRunId && parentSessionKey) {
+              if (!detailsClosed) {
+                // Never detected a report start live (no 🦉, and the run ended
+                // before the sustained-answer fallback had a chance to fire) —
+                // close the section now, right before emitting the real content.
+                const closeText = `\n</details>\n\n---\n\n**✅ ${childAgentLabel} 任務完成** (${progressLineCount} 條進度更新)\n\n`;
                 emitAgentEvent({
                   runId: parentRunId,
                   sessionKey: parentSessionKey,
                   stream: "assistant",
                   data: {
-                    text: pendingText.trim(),
-                    delta: pendingText.trim(),
+                    text: closeText,
+                    delta: closeText,
                   },
                 });
-                accumulatedReportText += pendingText.trim();  // Save final text
-              } else {
-                // Otherwise send as progress line
-                const formattedDelta = `> 📌 ${pendingText.trim()}\n\n`;
-                progressLineCount++;
-                emitAgentEvent({
-                  runId: parentRunId,
-                  sessionKey: parentSessionKey,
-                  stream: "assistant",
-                  data: {
-                    text: formattedDelta,
-                    delta: formattedDelta,
-                  },
-                });
+                detailsClosed = true;
               }
+              emitAgentEvent({
+                runId: parentRunId,
+                sessionKey: parentSessionKey,
+                stream: "assistant",
+                data: {
+                  text: remainingText,
+                  delta: remainingText,
+                },
+              });
+              accumulatedReportText += remainingText;
               log.info(
-                `[sessions_spawn] SUBAGENT STREAMING: Sent final pending text (${pendingText.length} chars)`,
+                `[sessions_spawn] SUBAGENT STREAMING: Sent final pending text (${remainingText.length} chars)`,
               );
             }
-            
-            // Close the collapsible section if we opened it and haven't closed it yet
+
+            // Close the collapsible section if we opened it and haven't closed
+            // it yet (covers the case where there was nothing left to flush).
             if (headerSent && !detailsClosed && parentRunId && parentSessionKey) {
               emitAgentEvent({
                 runId: parentRunId,
@@ -1010,7 +1098,7 @@ export function createSessionsSpawnTool(
         `[sessions_spawn] EXIT: Returning tool result to Agent A`,
       );
 
-      return jsonResult(result);
+      return jsonResult(addRoleToFailureResult(result, requestedAgentId));
     },
   };
 }

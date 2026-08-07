@@ -29,6 +29,7 @@ export const FIELD_LABELS: Record<string, string> = {
   logging: "Logging",
   "logging.level": "Log Level",
   "logging.file": "Log File Path",
+  "logging.retentionDays": "Log Retention Days",
   "logging.consoleLevel": "Console Log Level",
   "logging.consoleStyle": "Console Log Style",
   "logging.redactSensitive": "Sensitive Data Redaction Mode",

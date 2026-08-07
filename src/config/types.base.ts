@@ -283,6 +283,8 @@ export type LoggingConfig = {
   file?: string;
   /** Maximum size of a single log file in bytes before rotation. Default: 100 MB. */
   maxFileBytes?: number;
+  /** Days to keep dated rolling log files (openclaw-YYYY-MM-DD.log) before pruning. Default: 1. */
+  retentionDays?: number;
   consoleLevel?: "silent" | "fatal" | "error" | "warn" | "info" | "debug" | "trace";
   consoleStyle?: "pretty" | "compact" | "json";
   /** Redact sensitive tokens in log sinks and persisted transcript text. Default: "tools". Safety-boundary UI/tool/diagnostic payloads may still redact when this is "off". */

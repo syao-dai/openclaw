@@ -24,7 +24,8 @@ By default, the Gateway writes a rolling log file per day:
 The date uses the gateway host's local timezone. When `/tmp/openclaw` is unsafe
 or unavailable (and always on Windows), OpenClaw uses a user-scoped
 `openclaw-<uid>` directory under the OS temp dir instead. Dated log files are
-pruned after 24 hours.
+pruned after `logging.retentionDays` (default: `1`, i.e. 24 hours). Raise this
+value to keep older dated log files around longer for investigations.
 
 Each file rotates when the next write would exceed `logging.maxFileBytes`
 (default: 100 MB). OpenClaw keeps up to five numbered archives beside the
@@ -175,6 +176,7 @@ All logging configuration lives under `logging` in `~/.openclaw/openclaw.json`.
   "logging": {
     "level": "info",
     "file": "/tmp/openclaw/openclaw-YYYY-MM-DD.log",
+    "retentionDays": 14,
     "consoleLevel": "info",
     "consoleStyle": "pretty",
     "redactSensitive": "tools",

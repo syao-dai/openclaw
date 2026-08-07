@@ -45,7 +45,7 @@ function resolveDefaultLogFile(defaultLogDir: string): string {
 export const DEFAULT_LOG_DIR = resolveDefaultLogDir();
 export const DEFAULT_LOG_FILE = resolveDefaultLogFile(DEFAULT_LOG_DIR); // legacy single-file path
 
-const MAX_LOG_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+const DEFAULT_LOG_RETENTION_DAYS = 1;
 const DEFAULT_MAX_LOG_FILE_BYTES = 100 * 1024 * 1024; // 100 MB
 const MAX_ROTATED_LOG_FILES = 5;
 
@@ -55,6 +55,7 @@ type ResolvedSettings = {
   level: LogLevel;
   file: string;
   maxFileBytes: number;
+  maxLogAgeMs: number;
 };
 export type LoggerResolvedSettings = ResolvedSettings;
 type TsLogRecord = Record<string, unknown>;
@@ -519,6 +520,7 @@ function resolveSettings(): ResolvedSettings {
       level: "silent",
       file: DEFAULT_LOG_FILE,
       maxFileBytes: DEFAULT_MAX_LOG_FILE_BYTES,
+      maxLogAgeMs: resolveMaxLogAgeMs(undefined),
     };
   }
 
@@ -530,6 +532,7 @@ function resolveSettings(): ResolvedSettings {
       level: "silent",
       file: defaultRollingPathForToday(),
       maxFileBytes: DEFAULT_MAX_LOG_FILE_BYTES,
+      maxLogAgeMs: resolveMaxLogAgeMs(undefined),
     };
   }
 
@@ -541,14 +544,20 @@ function resolveSettings(): ResolvedSettings {
   const level = envLevel ?? fromConfig;
   const file = cfg?.file ?? resolveDefaultActiveLogFile();
   const maxFileBytes = resolveMaxLogFileBytes(cfg?.maxFileBytes);
-  return { level, file, maxFileBytes };
+  const maxLogAgeMs = resolveMaxLogAgeMs(cfg?.retentionDays);
+  return { level, file, maxFileBytes, maxLogAgeMs };
 }
 
 function settingsChanged(a: ResolvedSettings | null, b: ResolvedSettings) {
   if (!a) {
     return true;
   }
-  return a.level !== b.level || a.file !== b.file || a.maxFileBytes !== b.maxFileBytes;
+  return (
+    a.level !== b.level ||
+    a.file !== b.file ||
+    a.maxFileBytes !== b.maxFileBytes ||
+    a.maxLogAgeMs !== b.maxLogAgeMs
+  );
 }
 
 export function isFileLogLevelEnabled(level: LogLevel): boolean {
@@ -585,7 +594,7 @@ function buildLogger(settings: ResolvedSettings): TsLogger<LogObj> {
   fs.mkdirSync(path.dirname(activeFile), { recursive: true });
   // Clean up stale rolling logs when using a dated log filename.
   if (rollingFile) {
-    pruneOldRollingLogs(path.dirname(activeFile));
+    pruneOldRollingLogs(path.dirname(activeFile), settings.maxLogAgeMs);
   }
   let currentFileBytes = getCurrentLogFileBytes(activeFile);
   let warnedAboutRotationFailure = false;
@@ -597,7 +606,7 @@ function buildLogger(settings: ResolvedSettings): TsLogger<LogObj> {
         activeFile = nextActiveFile;
         fs.mkdirSync(path.dirname(activeFile), { recursive: true });
         if (rollingFile) {
-          pruneOldRollingLogs(path.dirname(activeFile));
+          pruneOldRollingLogs(path.dirname(activeFile), settings.maxLogAgeMs);
         }
         currentFileBytes = getCurrentLogFileBytes(activeFile);
       }
@@ -643,6 +652,14 @@ function resolveMaxLogFileBytes(raw: unknown): number {
     return Math.floor(raw);
   }
   return DEFAULT_MAX_LOG_FILE_BYTES;
+}
+
+function resolveMaxLogAgeMs(raw: unknown): number {
+  const days =
+    typeof raw === "number" && Number.isFinite(raw) && raw > 0
+      ? Math.floor(raw)
+      : DEFAULT_LOG_RETENTION_DAYS;
+  return days * 24 * 60 * 60 * 1000;
 }
 
 function getCurrentLogFileBytes(file: string): number {
@@ -779,10 +796,10 @@ function isRollingPath(file: string): boolean {
   );
 }
 
-function pruneOldRollingLogs(dir: string): void {
+function pruneOldRollingLogs(dir: string, maxAgeMs: number): void {
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const cutoff = Date.now() - MAX_LOG_AGE_MS;
+    const cutoff = Date.now() - maxAgeMs;
     for (const entry of entries) {
       if (!entry.isFile()) {
         continue;
