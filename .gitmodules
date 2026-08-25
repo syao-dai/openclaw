@@ -10,3 +10,6 @@
 [submodule "submodules/opwenwebui"]
 	path = submodules/opwenwebui
 	url = https://github.com/open-webui/open-webui.git
+[submodule "submodules/langfuse_exec_env"]
+	path = submodules/langfuse_exec_env
+	url = https://github.com/syao-dai/langfuse_exec_env.git
