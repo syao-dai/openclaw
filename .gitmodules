@@ -7,9 +7,12 @@
 [submodule "submodules/langfuse_python"]
 	path = submodules/langfuse_python
 	url = https://github.com/langfuse/langfuse-python.git
-[submodule "submodules/opwenwebui"]
-	path = submodules/opwenwebui
+[submodule "submodules/openwebui"]
+	path = submodules/openwebui
 	url = https://github.com/open-webui/open-webui.git
 [submodule "submodules/langfuse_exec_env"]
 	path = submodules/langfuse_exec_env
 	url = https://github.com/syao-dai/langfuse_exec_env.git
+[submodule "submodules/langfuse"]
+	path = submodules/langfuse
+	url = https://github.com/langfuse/langfuse.git

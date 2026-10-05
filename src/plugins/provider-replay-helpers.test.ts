@@ -9,6 +9,7 @@ import {
   buildPassthroughGeminiSanitizingReplayPolicy,
   resolveTaggedReasoningOutputMode,
   sanitizeGoogleGeminiReplayHistory,
+  shouldPreserveThinkingBlocks,
   buildStrictAnthropicReplayPolicy,
 } from "./provider-replay-helpers.js";
 
@@ -21,6 +22,33 @@ function expectFields(actual: unknown, expected: Record<string, unknown>): void 
     expect(record[key]).toEqual(value);
   }
 }
+
+describe("shouldPreserveThinkingBlocks", () => {
+  it.each([
+    "fais_dev_claude-sonnet-5-5",
+    "claude-sonnet-5-5",
+    "claude-opus-5",
+    "claude-haiku-6-1",
+    "claude-fable-5-1",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-5-sonnet",
+  ])("preserves thinking blocks for %s", (modelId) => {
+    expect(shouldPreserveThinkingBlocks(modelId)).toBe(true);
+  });
+
+  it.each([
+    "claude-3-7-sonnet-20250219",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-5-haiku-20241022",
+    "gpt-5-sonnet",
+    undefined,
+  ])("drops thinking blocks for %s", (modelId) => {
+    expect(shouldPreserveThinkingBlocks(modelId)).toBe(false);
+  });
+});
 
 describe("provider replay helpers", () => {
   it("builds strict openai-completions replay policy", () => {

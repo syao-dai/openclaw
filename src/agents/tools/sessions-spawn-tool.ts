@@ -12,10 +12,11 @@ import {
 import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGateway } from "../../gateway/call.js";
-import { resolveSnakeCaseParamKey } from "../../param-key.js";
 import { emitAgentEvent, onAgentEvent } from "../../infra/agent-events.js";
-import { createLazyImportLoader } from "../../shared/lazy-promise.js";
+import { markDiagnosticRunProgress } from "../../logging/diagnostic-run-activity.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { resolveSnakeCaseParamKey } from "../../param-key.js";
+import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import {
@@ -24,22 +25,19 @@ import {
   formatAcpInheritedToolAllowError,
   formatAcpInheritedToolDenyError,
 } from "../inherited-tool-deny.js";
+import { readLatestAssistantReply, waitForAgentRun } from "../run-wait.js";
 import { optionalStringEnum } from "../schema/typebox.js";
-import {
-  readLatestAssistantReply,
-  waitForAgentRun,
-} from "../run-wait.js";
 import type { SpawnedToolContext } from "../spawned-context.js";
 import { resolveAcpSessionsSpawnImageAttachments } from "../subagent-attachments.js";
 import { registerSubagentRun } from "../subagent-registry.js";
 import { resolveSubagentSpawnOwnership } from "../subagent-spawn-ownership.js";
+import { resolveConfiguredSubagentRunTimeoutSeconds } from "../subagent-spawn-plan.js";
 import {
   SUBAGENT_SPAWN_CONTEXT_MODES,
   SUBAGENT_SPAWN_MODES,
   spawnSubagentDirect,
 } from "../subagent-spawn.js";
 import { normalizeSubagentTaskName } from "../subagent-task-name.js";
-import { resolveConfiguredSubagentRunTimeoutSeconds } from "../subagent-spawn-plan.js";
 import {
   describeSessionsSpawnTool,
   SESSIONS_SPAWN_SUBAGENT_TOOL_DISPLAY_SUMMARY,
@@ -214,10 +212,10 @@ function createSessionsSpawnToolSchema(params: {
     expectsCompletionMessage: Type.Optional(
       Type.Boolean({
         description:
-          'If true (default), waits for the spawned agent to complete and returns the result synchronously. ' +
+          "If true (default), waits for the spawned agent to complete and returns the result synchronously. " +
           'If false, returns immediately with "accepted" status; completion is delivered via announcement. ' +
-          'Use false for fire-and-forget background tasks. ' +
-          'Native subagents only; ACP runtime always returns immediately regardless of this setting.',
+          "Use false for fire-and-forget background tasks. " +
+          "Native subagents only; ACP runtime always returns immediately regardless of this setting.",
       }),
     ),
 
@@ -402,9 +400,7 @@ export function createSessionsSpawnTool(
         : undefined;
 
       if (runtime === "acp") {
-        log.info(
-          `[sessions_spawn] RUNTIME_PATH: ACP (spawning via spawnAcpDirect)`,
-        );
+        log.info(`[sessions_spawn] RUNTIME_PATH: ACP (spawning via spawnAcpDirect)`);
         log.info(
           `[sessions_spawn] ACP Config: streamTo=${streamTo || "none"}, resumeSessionId=${resumeSessionId || "none"}`,
         );
@@ -530,13 +526,11 @@ export function createSessionsSpawnTool(
       }
 
       // Subagent runtime path
-      log.info(
-        `[sessions_spawn] RUNTIME_PATH: SUBAGENT (spawning via spawnSubagentDirect)`,
-      );
+      log.info(`[sessions_spawn] RUNTIME_PATH: SUBAGENT (spawning via spawnSubagentDirect)`);
       log.info(
         `[sessions_spawn] SUBAGENT Config: sandbox=${sandbox}, lightContext=${lightContext}, thread=${thread}`,
       );
-      
+
       const startTime = Date.now();
       log.info(
         `[sessions_spawn] SUBAGENT: Calling spawnSubagentDirect() at ${new Date(startTime).toISOString()}...`,
@@ -593,35 +587,38 @@ export function createSessionsSpawnTool(
       log.info(
         `[sessions_spawn] SUBAGENT Result: status=${result.status}, runId=${result.runId || "none"}, childSessionKey=${result.childSessionKey || "none"}`,
       );
-      
+
       // If expectsCompletionMessage is true, wait for Agent B to complete and read its result
-      if (expectsCompletionMessage && result.status === "accepted" && result.runId && result.childSessionKey) {
+      if (
+        expectsCompletionMessage &&
+        result.status === "accepted" &&
+        result.runId &&
+        result.childSessionKey
+      ) {
         log.info(
           `[sessions_spawn] SUBAGENT: SYNCHRONOUS MODE - Now waiting for Agent B (runId=${result.runId}) to complete...`,
         );
-        
+
         // 🆕 Start listening to Agent B's events and relay text deltas to Agent A
         const childSessionKey = result.childSessionKey;
         const parentSessionKey = opts?.agentSessionKey;
         const childRunId = result.runId;
-        const parentRunId = opts?.runId;  // ← Agent A's runId
-        
+        const parentRunId = opts?.runId; // ← Agent A's runId
+
         // Extract agent label from childSessionKey (e.g., "agent:fais-agent:subagent:xxx" → "fais-agent")
         const childAgentLabel = childSessionKey?.split(":")[1] || "Agent B";
-        
+
         log.info(
           `[sessions_spawn] SUBAGENT STREAMING: Setting up event relay from child (${childSessionKey}) to parent (${parentSessionKey || "none"})`,
         );
         log.info(
           `[sessions_spawn] SUBAGENT STREAMING: Agent A runId=${parentRunId || "none"}, Agent B runId=${childRunId}`,
         );
-        log.info(
-          `[sessions_spawn] SUBAGENT STREAMING: Child agent label: "${childAgentLabel}"`,
-        );
-        
+        log.info(`[sessions_spawn] SUBAGENT STREAMING: Child agent label: "${childAgentLabel}"`);
+
         // Track if we've sent the header
         let headerSent = false;
-        let detailsClosed = false;  // Track if we've closed the collapsible section
+        let detailsClosed = false; // Track if we've closed the collapsible section
         let progressLineCount = 0;
         // Thinking/reasoning deltas are display-only: they accumulate here so
         // reasoning-heavy models still show progress lines, but they must never
@@ -629,9 +626,9 @@ export function createSessionsSpawnTool(
         // thinking prose routinely contains "---\n#" style dividers or just runs
         // long, and either one used to get misread as the final answer starting.
         let thinkingPreview = "";
-        let pendingText = "";  // Real assistant-text candidate for the final answer
+        let pendingText = ""; // Real assistant-text candidate for the final answer
         let lastEventWasToolCall = false;
-        let accumulatedReportText = "";  // Accumulate all report text for final result
+        let accumulatedReportText = ""; // Accumulate all report text for final result
         // When the current uninterrupted run of real assistant text began (reset
         // on every tool call). Backs the sustained-answer fallback below.
         let textStreakStartedAt: number | undefined;
@@ -641,9 +638,9 @@ export function createSessionsSpawnTool(
           // Remove markdown heading symbols (# ## ### etc.) from each line
           // Split by newlines, remove # from start of each line, then rejoin
           return text
-            .split('\n')
-            .map(line => line.replace(/^#+\s*/, ''))
-            .join('\n');
+            .split("\n")
+            .map((line) => line.replace(/^#+\s*/, ""))
+            .join("\n");
         };
 
         // Progress lines relay raw thinking/text verbatim, which can run to
@@ -693,12 +690,56 @@ export function createSessionsSpawnTool(
           // }
           return false;
         };
-        
+
+        // Agent B can think silently for a long stretch with no tool call and
+        // no text delta — during that window the relay otherwise emits nothing
+        // at all after the initial header, which looks identical to a hang to
+        // whoever is watching Agent A's stream. Drip a "." into the still-open
+        // <details> block every 30s while thinking is the only activity, so
+        // the parent stream visibly keeps moving without leaking Agent B's
+        // actual reasoning text.
+        const THINKING_HEARTBEAT_INTERVAL_MS = 30_000;
+        let thinkingHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+        const stopThinkingHeartbeat = () => {
+          if (thinkingHeartbeatTimer) {
+            clearInterval(thinkingHeartbeatTimer);
+            thinkingHeartbeatTimer = null;
+          }
+        };
+        const startThinkingHeartbeat = () => {
+          if (thinkingHeartbeatTimer || !parentRunId || !parentSessionKey) {
+            return;
+          }
+          thinkingHeartbeatTimer = setInterval(() => {
+            emitAgentEvent({
+              runId: parentRunId,
+              sessionKey: parentSessionKey,
+              stream: "assistant",
+              data: { text: ".", delta: "." },
+            });
+          }, THINKING_HEARTBEAT_INTERVAL_MS);
+        };
+
         // Subscribe to Agent B's events
         const unsubscribe = onAgentEvent((evt) => {
           // Only process events from the child session
           if (evt.sessionKey !== childSessionKey) {
             return;
+          }
+          // Agent B's thinking/tool/text activity lives entirely in its own
+          // session, so it never touches Agent A's own diagnostic progress
+          // markers. Without this, stuck-session recovery sees Agent A's
+          // `sessions_spawn` tool call as motionless the whole time Agent B is
+          // working and force-aborts it once the blocked-tool-call threshold
+          // passes (~6 min) — killing the parent stream mid-flight even while
+          // Agent B is actively streaming real output. Touch progress on every
+          // relayed child event so the watchdog sees Agent A as alive too.
+          if (parentRunId && parentSessionKey) {
+            markDiagnosticRunProgress({
+              runId: parentRunId,
+              sessionKey: parentSessionKey,
+              reason: "sessions_spawn:child_activity",
+            });
           }
           // Track tool calls to know when to emit accumulated text
           if (evt.stream === "tool") {
@@ -711,6 +752,7 @@ export function createSessionsSpawnTool(
               thinkingPreview = "";
               pendingText = "";
               textStreakStartedAt = undefined;
+              stopThinkingHeartbeat();
               if (parentRunId && parentSessionKey) {
                 const reopenText = `\n\n<details open>\n<summary>🔄 ${childAgentLabel} 執行中...（繼續處理，點擊摺疊/展開）</summary>\n\n`;
                 log.info(
@@ -754,6 +796,7 @@ export function createSessionsSpawnTool(
             thinkingPreview = "";
             pendingText = "";
             textStreakStartedAt = undefined;
+            stopThinkingHeartbeat();
             lastEventWasToolCall = true;
             return;
           }
@@ -789,6 +832,7 @@ export function createSessionsSpawnTool(
                 `[sessions_spawn] SUBAGENT STREAMING: Received thinking delta (${thinkingDelta.length} chars)`,
               );
               thinkingPreview += thinkingDelta;
+              startThinkingHeartbeat();
             }
             return;
           }
@@ -800,8 +844,9 @@ export function createSessionsSpawnTool(
             // Check if this is a text delta (not tool calls, media, etc.)
             if (typeof delta === "string" && delta.length > 0 && parentRunId && parentSessionKey) {
               log.info(
-                 `[sessions_spawn] SUBAGENT STREAMING: Received text delta (${delta.length} chars), lastWasToolCall=${lastEventWasToolCall}`,
+                `[sessions_spawn] SUBAGENT STREAMING: Received text delta (${delta.length} chars), lastWasToolCall=${lastEventWasToolCall}`,
               );
+              stopThinkingHeartbeat();
 
               // Send collapsible header on first output
               if (!headerSent) {
@@ -914,7 +959,7 @@ export function createSessionsSpawnTool(
             }
           }
         });
-        
+
         // sessions_spawn rejects a per-call runTimeoutSeconds override (see
         // UNSUPPORTED_SESSIONS_SPAWN_TIMEOUT_PARAM_KEYS above), so only the config default applies here.
         const cfg = getRuntimeConfig();
@@ -925,40 +970,40 @@ export function createSessionsSpawnTool(
         log.info(
           `[sessions_spawn] SUBAGENT: Resolved runTimeoutSeconds=${resolvedRunTimeoutSeconds} (from config: ${cfg?.agents?.defaults?.subagents?.runTimeoutSeconds ?? "none"})`,
         );
-        
+
         const waitTimeoutMs = (resolvedRunTimeoutSeconds || 300) * 1000 + 10000; // timeout + 10s buffer
         const waitStartTime = Date.now();
-        
+
         try {
           log.info(
             `[sessions_spawn] SUBAGENT: Calling waitForAgentRun() with timeout=${waitTimeoutMs}ms...`,
           );
-          
+
           const waitResult = await waitForAgentRun({
             runId: result.runId,
             timeoutMs: waitTimeoutMs,
           });
-          
+
           const waitEndTime = Date.now();
           const waitElapsedMs = waitEndTime - waitStartTime;
-          
+
           log.info(
             `[sessions_spawn] SUBAGENT: waitForAgentRun() completed with status=${waitResult.status} after ${waitElapsedMs}ms`,
           );
-          
+
           if (waitResult.status === "ok") {
             // Agent B completed successfully, read its result
             log.info(
               `[sessions_spawn] SUBAGENT: Agent B completed successfully. Reading result from ${result.childSessionKey}...`,
             );
-            
+
             const agentBResult = await readLatestAssistantReply({
               sessionKey: result.childSessionKey,
               limit: 50,
             });
-            
+
             const totalElapsedMs = Date.now() - startTime;
-            
+
             // 🆕 Clean up event listener
             log.info(
               `[sessions_spawn] SUBAGENT STREAMING: Cleaning up event listener after Agent B completion`,
@@ -967,6 +1012,7 @@ export function createSessionsSpawnTool(
               `[sessions_spawn] SUBAGENT STREAMING: Relayed ${progressLineCount} progress updates`,
             );
             unsubscribe();
+            stopThinkingHeartbeat();
             // Send any remaining thinking/text. The run is over now, so unlike
             // the live progress-line path this is never a "preview" of more
             // to come — it's the tail of the real answer, so it goes out in
@@ -1018,23 +1064,24 @@ export function createSessionsSpawnTool(
                 },
               });
             }
-            
+
             if (agentBResult) {
               log.info(
                 `[sessions_spawn] SUBAGENT: SUCCESS - Got Agent B result from transcript (${agentBResult.length} chars) after total ${totalElapsedMs}ms`,
               );
-              
+
               // Use accumulated streaming text if available and longer than transcript result
-              const finalResult = accumulatedReportText.length > agentBResult.length 
-                ? accumulatedReportText 
-                : agentBResult;
-              
+              const finalResult =
+                accumulatedReportText.length > agentBResult.length
+                  ? accumulatedReportText
+                  : agentBResult;
+
               if (accumulatedReportText.length > agentBResult.length) {
                 log.info(
                   `[sessions_spawn] SUBAGENT: Using accumulated streaming text (${accumulatedReportText.length} chars) instead of transcript result (${agentBResult.length} chars)`,
                 );
               }
-              
+
               // Return the actual result from Agent B
               return jsonResult({
                 status: "completed",
@@ -1060,6 +1107,7 @@ export function createSessionsSpawnTool(
             );
             // 🆕 Clean up event listener on timeout
             unsubscribe();
+            stopThinkingHeartbeat();
             return jsonResult({
               ...result,
               note: `Subagent started but timed out after ${Math.round(waitElapsedMs / 1000)}s. Check /subagents list for status. Original note: ${result.note || ""}`,
@@ -1070,6 +1118,7 @@ export function createSessionsSpawnTool(
             );
             // 🆕 Clean up event listener on error
             unsubscribe();
+            stopThinkingHeartbeat();
             return jsonResult({
               ...result,
               note: `Subagent started but wait failed (${waitResult.status}). Check /subagents list for status. Original note: ${result.note || ""}`,
@@ -1082,6 +1131,7 @@ export function createSessionsSpawnTool(
           );
           // 🆕 Clean up event listener on exception
           unsubscribe();
+          stopThinkingHeartbeat();
           // Fall through to return accepted status
         }
       } else if (expectsCompletionMessage) {
@@ -1093,10 +1143,8 @@ export function createSessionsSpawnTool(
           `[sessions_spawn] SUBAGENT: ASYNCHRONOUS MODE - Agent A received immediate acceptance (Agent B may still be running)`,
         );
       }
-      
-      log.info(
-        `[sessions_spawn] EXIT: Returning tool result to Agent A`,
-      );
+
+      log.info(`[sessions_spawn] EXIT: Returning tool result to Agent A`);
 
       return jsonResult(addRoleToFailureResult(result, requestedAgentId));
     },

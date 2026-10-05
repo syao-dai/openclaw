@@ -62,6 +62,7 @@ import type {
   ThinkingLevel,
 } from "../llm/types.js";
 import "../llm/ai-transport-host.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { looksLikeSecretSentinel, resolveSecretSentinel } from "../secrets/sentinel.js";
 import { MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE } from "../shared/assistant-error-format.js";
 import {
@@ -88,6 +89,8 @@ import {
 } from "./transport-stream-shared.js";
 import type { ContextUsage } from "./usage.js";
 
+const log = createSubsystemLogger("anthropic-transport");
+
 const CLAUDE_CODE_VERSION = "2.1.75";
 const CLAUDE_CODE_BILLING_SYSTEM_BLOCK = `x-anthropic-billing-header: cc_version=${CLAUDE_CODE_VERSION}; cc_entrypoint=sdk-cli;`;
 const ANTHROPIC_MESSAGES_ERROR_BODY_MAX_BYTES = 8 * 1024;
@@ -96,6 +99,19 @@ const ANTHROPIC_MESSAGES_ERROR_BODY_READ_IDLE_TIMEOUT_MS = 10_000;
 // Mirror the fetch sanitizer cap here because compatible routes such as Kimi
 // bypass that layer; without a parser-local guard, partial frames grow forever.
 const ANTHROPIC_MESSAGES_SSE_PENDING_BUFFER_MAX_CHARS = 16 * 1024 * 1024;
+// Diagnostic-only allowlist (#terminated-after-message_stop investigation): any
+// SSE event type not in this set falls through every `if` below unnoticed today
+// (e.g. Anthropic's keep-alive `ping` frames). Logging the miss tells us whether
+// a "silent" gap really had zero bytes on the wire or just unhandled frames.
+const KNOWN_ANTHROPIC_SSE_EVENT_TYPES = new Set([
+  "error",
+  "message_start",
+  "message_stop",
+  "content_block_start",
+  "content_block_delta",
+  "content_block_stop",
+  "message_delta",
+]);
 const CLAUDE_CODE_TOOLS = [
   "Read",
   "Write",
@@ -1224,6 +1240,13 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
       // swaps this to the fallback model's cost table.
       let costModel = model;
       let messageStartPromptUsage: AnthropicPromptUsageSnapshot | undefined;
+      // Declared outside the try block (not just next to their first use inside
+      // it) so the catch handler's diagnostic log below can still read them.
+      let sawMessageStop = false;
+      // Diagnostic-only (#terminated-after-message_stop investigation): lets the
+      // catch block below report how long the wire was silent before a stream
+      // failure, without having to cross-reference separate log lines by hand.
+      let lastSseEventAt = Date.now();
       try {
         const apiKey = options?.apiKey ?? getEnvApiKey(model.provider) ?? "";
         if (!apiKey) {
@@ -1260,7 +1283,6 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
         const allowReasoningContentReplay = supportsReasoningContentReplay(model);
         const reasoningContentThinkingBlocks = new Map<number, number>();
         const reasoningContentTextBlocks = new Map<number, number>();
-        let sawMessageStop = false;
         const pendingTextEnds: Array<Parameters<typeof eventSink.push>[0]> = [];
         // Hold text_end until tool-boundary classification is known.
         const flushPendingTextEnds = () => {
@@ -1377,6 +1399,17 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
           }
         };
         for await (const event of anthropicStream) {
+          const sinceLastSseEventMs = Date.now() - lastSseEventAt;
+          lastSseEventAt = Date.now();
+          if (!KNOWN_ANTHROPIC_SSE_EVENT_TYPES.has(event.type as string)) {
+            log.debug(`[anthropic-transport] unrecognized SSE event type; no handler consumes it`, {
+              eventType: event.type,
+              sinceLastSseEventMs,
+              sawMessageStop,
+              provider: model.provider,
+              model: model.id,
+            });
+          }
           if (event.type === "error") {
             const error = event.error as { message?: string } | undefined;
             throw new Error(error?.message || "Anthropic Messages stream failed");
@@ -1437,6 +1470,17 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
           }
           if (event.type === "message_stop") {
             sawMessageStop = true;
+            // Diagnostic-only (#terminated-after-message_stop investigation): the
+            // loop keeps reading after this point looking for a clean EOF. If the
+            // stream fails, the catch block below reports it happened here, with
+            // a fully assembled message already in `output` and nothing left to
+            // read — the retry-vs-fix-the-drain-loop question hinges on this.
+            log.debug(`[anthropic-transport] message_stop received; still draining for EOF`, {
+              contentBlocks: output.content.length,
+              stopReason: output.stopReason,
+              provider: model.provider,
+              model: model.id,
+            });
             continue;
           }
           if (event.type === "content_block_start") {
@@ -1847,6 +1891,28 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
         flushPendingTextEnds();
         finalizeTransportStream({ stream, output });
       } catch (error) {
+        // Diagnostic-only (#terminated-after-message_stop investigation): captures
+        // whether the stream had already produced a complete message (sawMessageStop
+        // + assembled content) at the moment it failed. If that keeps showing up
+        // true for "terminated"-style transport errors, the fix is to stop the
+        // drain loop at message_stop instead of retrying the whole call.
+        log.warn(`[anthropic-transport] stream failed`, {
+          sawMessageStop,
+          sinceLastSseEventMs: Date.now() - lastSseEventAt,
+          contentBlocks: output.content.length,
+          contentBlockTypes: output.content.map((block) => block.type),
+          stopReason: output.stopReason,
+          usage: output.usage,
+          provider: model.provider,
+          model: model.id,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          errorCause:
+            error instanceof Error && error.cause instanceof Error
+              ? error.cause.message
+              : error instanceof Error
+                ? error.cause
+                : undefined,
+        });
         if (refusalBuffer) {
           refusalBuffer.discard();
           output.content = [];
