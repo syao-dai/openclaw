@@ -4183,6 +4183,16 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Next steps
   - H2: Related
 
+## install/docker-image-build.md
+
+- Route: /install/docker-image-build
+- Headings:
+  - H2: Build command
+  - H2: Verify a built image
+  - H2: Pinned versions
+  - H2: Python in the image
+  - H2: Vulnerability scan notes
+
 ## install/docker-vm-runtime.md
 
 - Route: /install/docker-vm-runtime
@@ -5232,6 +5242,31 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Allowed methods
   - H2: WebSocket comparison
   - H2: Troubleshooting
+  - H2: Related
+
+## plugins/agent-iteration-hooks.md
+
+- Route: /plugins/agent-iteration-hooks
+- Headings:
+  - H1: Agent Iteration Hooks
+  - H2: Overview
+  - H2: Use Cases
+  - H2: Hook: agentiterationstart
+  - H3: Event Structure
+  - H3: Context
+  - H3: Example
+  - H2: Hook: agentiterationend
+  - H3: Event Structure
+  - H3: Example
+  - H2: Complete Example: Tracking Agent Iterations
+  - H2: Integration with Langfuse
+  - H2: Comparison with Existing Hooks
+  - H2: Agent Flow with Iteration Hooks
+  - H2: Notes
+  - H2: Limitations &amp; Workarounds
+  - H3: agentiterationstart Input Data
+  - H3: Complete Observability Strategy
+  - H3: Important: System Prompt and Message History Can Change
   - H2: Related
 
 ## plugins/agent-tools.md
