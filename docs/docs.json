@@ -1074,6 +1074,7 @@
                   "install/bun",
                   "install/clawdock",
                   "install/docker",
+                  "install/docker-image-build",
                   "install/nix",
                   "install/podman"
                 ]

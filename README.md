@@ -258,6 +258,10 @@ pnpm ui:build
 
 Note: `pnpm openclaw ...` runs TypeScript directly (via `tsx`). `pnpm build` produces `dist/` for running via Node / the packaged `openclaw` binary, while `pnpm gateway:watch` rebuilds the runtime on demand during the dev loop.
 
+## Building the Docker image (this fork)
+
+Build with `docker build --build-arg OPENCLAW_INSTALL_BROWSER=1 -t openclaw:local .` for the browser, CJK fonts, and vendored Plotly. `OPENCLAW_INSTALL_BROWSER` is a build arg, not a runtime environment variable. Details on verification, pinned Python and Plotly versions, and vulnerability scan notes: [Docker image build](docs/install/docker-image-build.md).
+
 ## Development channels
 
 - **stable**: tagged releases (`vYYYY.M.D` or `vYYYY.M.D-<patch>`), npm dist-tag `latest`.
