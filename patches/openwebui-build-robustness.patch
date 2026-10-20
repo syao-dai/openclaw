@@ -1,0 +1,41 @@
+diff --git a/Dockerfile b/Dockerfile
+index c7fb201b4..7c2524339 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -40,13 +40,35 @@ WORKDIR /app
+ # to store git revision in build
+ RUN apk add --no-cache git
+ 
++# Give npm's network layer generous timeouts and retries so flaky registry
++# connections don't fail the build. npm defaults: 300000ms (5 min) per
++# attempt, 2 retries, 10s-60s backoff between attempts.
++ENV npm_config_fetch_timeout=600000 \
++    npm_config_fetch_retries=5 \
++    npm_config_fetch_retry_mintimeout=30000 \
++    npm_config_fetch_retry_maxtimeout=120000
++
+ COPY package.json package-lock.json ./
+ RUN npm ci --force
+ 
+ COPY . .
+ ENV APP_BUILD_HASH=${BUILD_HASH}
+ ENV APP_BUILD_CHANNEL=${BUILD_CHANNEL}
+-RUN npm run build && \
++ARG BUILD_RETRIES=3
++# Retry the whole build: the Pyodide wheel download can fail intermittently ("fetch failed").
++# Downloaded wheels are cached in node_modules, so a retry only re-fetches what is missing.
++RUN set -eu; \
++    attempt=1; \
++    until npm run build; do \
++        if [ "$attempt" -ge "$BUILD_RETRIES" ]; then \
++            echo "npm run build failed after $attempt attempts" >&2; \
++            exit 1; \
++        fi; \
++        echo "npm run build failed (attempt $attempt/$BUILD_RETRIES), retrying in 10s..." >&2; \
++        rm -rf static/pyodide build; \
++        attempt=$((attempt + 1)); \
++        sleep 10; \
++    done; \
+     if [ "$USE_SLIM" = "true" ]; then find build -type f -name '*.map' -delete; fi
+ 
+ # Prepare backend ownership before the final copy so static assets occupy one layer.

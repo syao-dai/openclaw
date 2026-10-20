@@ -240,3 +240,4 @@ extensions/discord/assets/embedded-app-sdk.mjs
 .build/
 COMMIT_MESSAGE_*.md
 dev_env/*
+.mcp.json
