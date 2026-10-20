@@ -386,16 +386,39 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
     if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
       apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        xvfb fontconfig fonts-noto-cjk && \
       install -d -m 0755 -o node -g node "$(dirname "$PLAYWRIGHT_BROWSERS_PATH")" && \
       mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" && \
       node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
-      chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"; \
+      chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH" && \
+      fc-cache -f; \
+    fi
+
+# Vendor Plotly for report-export screenshots so headless Chromium never depends on the CDN.
+# The exporter intercepts https://cdn.plot.ly/plotly-<version>.min.js and serves this file.
+# Bump PLOTLY_VERSION and PLOTLY_SHA256 together; only installed with OPENCLAW_INSTALL_BROWSER.
+ARG PLOTLY_VERSION=2.35.2
+ARG PLOTLY_SHA256=6d21266ce1bd7d9e5ab4e115989c70c20de0382fd973a8f26ab58619eba4d603
+RUN if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
+      install -d -m 0755 /opt/report-export/vendor && \
+      curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+        "https://cdn.plot.ly/plotly-${PLOTLY_VERSION}.min.js" \
+        -o "/opt/report-export/vendor/plotly-${PLOTLY_VERSION}.min.js" && \
+      echo "${PLOTLY_SHA256}  /opt/report-export/vendor/plotly-${PLOTLY_VERSION}.min.js" | sha256sum -c - && \
+      chmod 0644 "/opt/report-export/vendor/plotly-${PLOTLY_VERSION}.min.js"; \
     fi
 
 # Install Python 3.13 and uv package manager.
 # Python 3.13 is built from source for maximum compatibility.
 # uv is a fast Python package installer and resolver.
+# Security: 3.13.4+ is required for the CVE-2025-4517 tarfile filter="data" fix; the
+# freshly built interpreter also upgrades pip and wheel (CVE-2026-24049 fixed in wheel 0.46.2).
+# CVE-2018-20225 (pip --extra-index-url dependency confusion) has no upstream fix; never pass
+# --extra-index-url for private packages (use --index-url or uv with an explicit index).
+# Bump PYTHON_VERSION and PYTHON_SHA256 together (sha256 of Python-<ver>.tar.xz).
+ARG PYTHON_VERSION=3.13.16
+ARG PYTHON_SHA256=f4b1bfb3c79b5bb11b8d228a12504163b4c0dab4d679828d8f5f26b6cb6ab35d
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
     apt-get update && \
@@ -417,16 +440,19 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
       unzip \
       jq \
       wget && \
-    # Download and build Python 3.13
+    # Download, verify and build Python 3.13
     cd /tmp && \
-    wget -q https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tar.xz && \
-    tar -xf Python-3.13.1.tar.xz && \
-    cd Python-3.13.1 && \
+    wget -q "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" && \
+    echo "${PYTHON_SHA256}  Python-${PYTHON_VERSION}.tar.xz" | sha256sum -c - && \
+    tar -xf "Python-${PYTHON_VERSION}.tar.xz" && \
+    cd "Python-${PYTHON_VERSION}" && \
     ./configure --enable-optimizations --with-ensurepip=install && \
     make -j$(nproc) && \
     make altinstall && \
     cd / && \
-    rm -rf /tmp/Python-3.13.1* && \
+    rm -rf "/tmp/Python-${PYTHON_VERSION}"* && \
+    # Upgrade the bundled pip and make sure wheel is >= 0.46.2 (CVE-2026-24049)
+    /usr/local/bin/python3.13 -m pip install --no-cache-dir --retries 5 --upgrade pip "wheel>=0.46.2" && \
     # Create python3 symlink to python3.13
     update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.13 1 && \
     update-alternatives --install /usr/bin/pip3 pip3 /usr/local/bin/pip3.13 1 && \

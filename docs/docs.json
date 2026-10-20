@@ -1428,6 +1428,7 @@
                       "install/docker/sandbox-and-troubleshooting"
                     ]
                   },
+                  "install/docker-image-build",
                   "install/podman"
                 ]
               },

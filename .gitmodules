@@ -16,3 +16,6 @@
 [submodule "submodules/langfuse"]
 	path = submodules/langfuse
 	url = https://github.com/langfuse/langfuse.git
+[submodule "submodules/report_export"]
+	path = submodules/report_export
+	url = https://github.com/syao-dai/openclaw_report_export.git
