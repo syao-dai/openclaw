@@ -109,6 +109,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and the [so
 
 OpenClaw is developed in the open by the [OpenClaw Foundation](https://openclaw.org), an independent 501(c)(3). The Foundation employs the core team and signs releases. Donors and infrastructure sponsors support the Foundation; none of them own or direct the project. OpenAI is a donor, not an owner.
 
+## Building the Docker image (this fork)
+
+Build with `docker build --build-arg OPENCLAW_INSTALL_BROWSER=1 -t openclaw:local .` for the browser, CJK fonts, and vendored Plotly. `OPENCLAW_INSTALL_BROWSER` is a build arg, not a runtime environment variable. Details on verification, pinned Python and Plotly versions, and vulnerability scan notes: [Docker image build](docs/install/docker-image-build.md).
+
 ## Community
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for maintainers and contribution guidelines; AI-assisted PRs are welcome.
